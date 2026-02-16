@@ -235,26 +235,58 @@ public struct EMLParser {
         let delimiter = "--\(boundary)"
         let endDelimiter = "--\(boundary)--"
 
-        // Split into parts between delimiters
+        // Split the body by the boundary delimiter using range-based splitting
+        // This avoids line-by-line parsing issues across platforms
         var rawParts: [String] = []
-        let lines = bodyString.components(separatedBy: "\n")
-        var currentPart: [String]? = nil
+        var searchStart = bodyString.startIndex
 
-        for line in lines {
-            // Trim CR (\r) and any trailing whitespace for boundary comparison
-            let trimmed = line.replacingOccurrences(of: "\r", with: "").trimmingCharacters(in: .whitespaces)
-            if trimmed == endDelimiter || trimmed.hasPrefix(endDelimiter) {
-                if let part = currentPart {
-                    rawParts.append(part.joined(separator: "\n"))
-                }
+        while searchStart < bodyString.endIndex {
+            // Find the next boundary
+            guard let delimRange = bodyString.range(of: delimiter, range: searchStart..<bodyString.endIndex) else {
                 break
-            } else if trimmed == delimiter || trimmed.hasPrefix(delimiter) {
-                if let part = currentPart {
-                    rawParts.append(part.joined(separator: "\n"))
+            }
+
+            // Check if this is the end delimiter
+            let afterDelim = delimRange.upperBound
+            if afterDelim < bodyString.endIndex {
+                let remaining = bodyString[afterDelim...]
+                if remaining.hasPrefix("--") {
+                    // End delimiter — stop
+                    break
                 }
-                currentPart = []
+            }
+
+            // Find the start of part content (skip past delimiter + line ending)
+            var contentStart = afterDelim
+            if contentStart < bodyString.endIndex && bodyString[contentStart] == "\r" {
+                contentStart = bodyString.index(after: contentStart)
+            }
+            if contentStart < bodyString.endIndex && bodyString[contentStart] == "\n" {
+                contentStart = bodyString.index(after: contentStart)
+            }
+
+            // Find the next boundary to determine the end of this part
+            if let nextDelimRange = bodyString.range(of: delimiter, range: contentStart..<bodyString.endIndex) {
+                var contentEnd = nextDelimRange.lowerBound
+                // Strip trailing \r\n or \n before boundary
+                if contentEnd > contentStart {
+                    let beforeEnd = bodyString.index(before: contentEnd)
+                    if bodyString[beforeEnd] == "\n" {
+                        contentEnd = beforeEnd
+                        if contentEnd > contentStart {
+                            let beforeLF = bodyString.index(before: contentEnd)
+                            if bodyString[beforeLF] == "\r" {
+                                contentEnd = beforeLF
+                            }
+                        }
+                    }
+                }
+                rawParts.append(String(bodyString[contentStart..<contentEnd]))
+                searchStart = nextDelimRange.lowerBound
             } else {
-                currentPart?.append(line)
+                // No more boundaries — take the rest
+                rawParts.append(String(bodyString[contentStart...]).trimmingCharacters(in: .whitespacesAndNewlines))
+                break
             }
         }
 

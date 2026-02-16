@@ -491,6 +491,18 @@ public actor IMAPServer {
         let command = FetchMessagePartCommand(identifier: identifier, section: section)
         return try await executeCommand(command)
     }
+
+    /**
+     Fetches the complete raw RFC822 message (headers + body) without setting the \Seen flag.
+
+     - Parameter identifier: The identifier of the message
+     - Returns: The complete raw message data
+     - Throws: `IMAPError.fetchFailed` if the fetch operation fails
+     */
+    public func fetchRawMessage<T: MessageIdentifier>(identifier: T) async throws -> Data {
+        let command = FetchRawMessageCommand(identifier: identifier)
+        return try await executeCommand(command)
+    }
     
     /**
      Fetch all message parts and their data for a message

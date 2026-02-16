@@ -102,6 +102,44 @@ struct FetchMessageInfoCommand<T: MessageIdentifier>: IMAPTaggedCommand {
     }
 }
 
+/// Command for fetching the complete raw message (headers + body)
+struct FetchRawMessageCommand<T: MessageIdentifier>: IMAPTaggedCommand {
+    typealias ResultType = Data
+    typealias HandlerType = FetchPartHandler
+
+    /// The message identifier to fetch
+    let identifier: T
+
+    /// Custom timeout for this operation
+    var timeoutSeconds: Int { return 10 }
+
+    /// Initialize a new fetch raw message command
+    /// - Parameter identifier: The message identifier to fetch
+    init(identifier: T) {
+        self.identifier = identifier
+    }
+
+    /// Convert to an IMAP tagged command
+    /// - Parameter tag: The command tag
+    /// - Returns: A TaggedCommand ready to be sent to the server
+    func toTaggedCommand(tag: String) -> TaggedCommand {
+        let set = MessageIdentifierSet<T>(identifier)
+        let attributes: [FetchAttribute] = [
+            .bodySection(peek: true, SectionSpecifier.complete, nil)
+        ]
+
+        if T.self == UID.self {
+            return TaggedCommand(tag: tag, command: .uidFetch(
+                .set(set.toNIOSet()), attributes, []
+            ))
+        } else {
+            return TaggedCommand(tag: tag, command: .fetch(
+                .set(set.toNIOSet()), attributes, []
+            ))
+        }
+    }
+}
+
 /// Command for fetching the structure of a message
  struct FetchStructureCommand<T: MessageIdentifier>: IMAPTaggedCommand {
     typealias ResultType = [MessagePart]

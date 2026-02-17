@@ -1,6 +1,5 @@
 import Testing
 @testable import SwiftMail
-@testable import SwiftMail
 
 struct SMTPTests {
     @Test
@@ -55,4 +54,40 @@ struct SMTPTests {
         #expect(email.recipients.count == 1, "Should have 1 recipient")
         #expect(email.recipients[0].address == "recipient@example.com", "Recipient address should match")
     }
-} 
+
+    @Test
+    func testRequiresSTARTTLSUpgradePolicy() {
+        #expect(
+            SMTPServer.requiresSTARTTLSUpgrade(
+                port: 587,
+                useSSL: false,
+                capabilities: ["SIZE", "STARTTLS", "AUTH PLAIN"]
+            )
+        )
+
+        #expect(
+            !SMTPServer.requiresSTARTTLSUpgrade(
+                port: 587,
+                useSSL: false,
+                capabilities: ["SIZE", "AUTH PLAIN"]
+            )
+        )
+
+        #expect(
+            !SMTPServer.requiresSTARTTLSUpgrade(
+                port: 465,
+                useSSL: true,
+                capabilities: ["STARTTLS"]
+            )
+        )
+    }
+
+    @Test
+    func testSTARTTLSFailureIsFatalForPort587RegardlessOfHost() {
+        #expect(SMTPServer.shouldFailClosedOnSTARTTLSFailure(port: 587, host: "smtp.gmail.com"))
+        #expect(SMTPServer.shouldFailClosedOnSTARTTLSFailure(port: 587, host: "smtp.example.com"))
+
+        #expect(!SMTPServer.shouldFailClosedOnSTARTTLSFailure(port: 465, host: "smtp.gmail.com"))
+        #expect(!SMTPServer.shouldFailClosedOnSTARTTLSFailure(port: 25, host: "smtp.example.com"))
+    }
+}

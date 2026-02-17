@@ -212,18 +212,17 @@ public actor SMTPServer {
         // Fetch capabilities using our new method
         let capabilities = try await fetchCapabilities()
         
-        // If not using SSL and port is standard SMTP port, try STARTTLS
-        if !useSSL && port == 587 && capabilities.contains("STARTTLS") {
+        // Upgrade submission connections to TLS when advertised.
+        if Self.requiresSTARTTLSUpgrade(port: port, useSSL: useSSL, capabilities: capabilities) {
             do {
                 try await startTLS()
             } catch {
-                // For Gmail and other secure servers, we should not continue without encryption
-                if host.contains("gmail.com") || host.contains("google.com") {
-                    logger.error("STARTTLS failed for Gmail SMTP: \(error.localizedDescription). Cannot continue without encryption.")
-                    throw SMTPError.tlsFailed("Gmail requires encryption: \(error.localizedDescription)")
-                } else {
-                logger.warning("STARTTLS failed: \(error.localizedDescription). Continuing without encryption.")
+                if Self.shouldFailClosedOnSTARTTLSFailure(port: port, host: host) {
+                    logger.error("STARTTLS failed for \(host): \(error.localizedDescription). Cannot continue without encryption.")
+                    throw SMTPError.tlsFailed("STARTTLS required on port 587 but failed: \(error.localizedDescription)")
                 }
+
+                logger.warning("STARTTLS failed: \(error.localizedDescription). Continuing without encryption.")
             }
         }
         
@@ -302,6 +301,15 @@ public actor SMTPServer {
         guard result.success else {
             throw SMTPError.authenticationFailed(result.errorMessage ?? "XOAUTH2 authentication failed")
         }
+    }
+
+    static func requiresSTARTTLSUpgrade(port: Int, useSSL: Bool, capabilities: [String]) -> Bool {
+        !useSSL && port == 587 && capabilities.contains("STARTTLS")
+    }
+
+    static func shouldFailClosedOnSTARTTLSFailure(port: Int, host: String) -> Bool {
+        _ = host
+        return port == 587
     }
 
     /**

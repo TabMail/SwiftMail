@@ -135,16 +135,21 @@ final class IMAPConnection {
         return stream
     }
 
-    func done() async throws {
+    func done(timeoutSeconds: TimeInterval = 15) async throws {
         guard let handler = idleHandler else {
             logger.debug("No active IDLE session, skipping DONE command")
             return
         }
 
-        guard let channel = self.channel else { return }
+        guard let channel = self.channel, channel.isActive else {
+            logger.warning("Cannot send DONE because channel is not active")
+            idleHandler = nil
+            responseBuffer.hasActiveHandler = false
+            throw IMAPError.connectionFailed("Channel is not active")
+        }
 
         guard !idleTerminationInProgress else {
-            try await handler.promise.futureResult.get()
+            try await waitForIdleHandlerCompletion(handler, timeoutSeconds: timeoutSeconds)
             return
         }
 
@@ -159,10 +164,16 @@ final class IMAPConnection {
         do {
             try await channel.writeAndFlush(IMAPClientHandler.OutboundIn.part(.idleDone)).get()
         } catch {
-            // Ignore write errors during DONE.
+            logger.warning("Failed to send DONE: \(error)")
         }
 
-        try await handler.promise.futureResult.get()
+        do {
+            try await waitForIdleHandlerCompletion(handler, timeoutSeconds: timeoutSeconds)
+        } catch {
+            logger.warning("Timed out waiting for IDLE termination after DONE")
+            try? await disconnect()
+            throw error
+        }
     }
 
     func noop() async throws -> [IMAPServerEvent] {
@@ -375,8 +386,39 @@ final class IMAPConnection {
         }
     }
 
-    private func waitForIdleCompletionIfNeeded() async throws {
+    private func waitForIdleCompletionIfNeeded(timeoutSeconds: TimeInterval = 15) async throws {
         guard let handler = idleHandler else { return }
+        do {
+            try await waitForIdleHandlerCompletion(handler, timeoutSeconds: timeoutSeconds)
+        } catch {
+            logger.warning("IDLE handler did not complete in time; resetting connection before continuing")
+            idleHandler = nil
+            responseBuffer.hasActiveHandler = false
+            try? await disconnect()
+            throw error
+        }
+    }
+
+    private func waitForIdleHandlerCompletion(_ handler: IdleHandler, timeoutSeconds: TimeInterval) async throws {
+        let timeout = max(timeoutSeconds, 0.1)
+        let timeoutNanoseconds = UInt64(timeout * 1_000_000_000)
+        let pollNanoseconds: UInt64 = 100_000_000  // 100ms
+
+        var elapsed: UInt64 = 0
+        while !handler.isCompleted {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            if elapsed >= timeoutNanoseconds {
+                throw IMAPError.timeout
+            }
+
+            let remaining = timeoutNanoseconds - elapsed
+            let sleepNanos = min(pollNanoseconds, remaining)
+            try await Task.sleep(nanoseconds: sleepNanos)
+            elapsed += sleepNanos
+        }
+
         try await handler.promise.futureResult.get()
     }
 

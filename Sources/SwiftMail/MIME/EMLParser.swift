@@ -233,7 +233,6 @@ public struct EMLParser {
         }
 
         let delimiter = "--\(boundary)"
-        let endDelimiter = "--\(boundary)--"
 
         // Split the body by the boundary delimiter using range-based splitting
         // This avoids line-by-line parsing issues across platforms
@@ -543,9 +542,8 @@ public struct EMLParser {
                 let next1 = input.index(index, offsetBy: 1, limitedBy: input.endIndex)
                 let next2 = next1.flatMap { input.index($0, offsetBy: 1, limitedBy: input.endIndex) }
 
-                if let n1 = next1, let n2 = next2 {
-                    let hex = String(input[n1..<n2]) + String(input[n2])
-                    // Actually we need two hex chars after =
+                if let n1 = next1, next2 != nil {
+                    // Decode two hex chars after "=" into a single byte.
                     let hexStr = String(input[n1]) + String(input[input.index(after: n1)])
                     if let byte = UInt8(hexStr, radix: 16) {
                         bytes.append(byte)

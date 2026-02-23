@@ -585,8 +585,8 @@ struct Idle: ParsableCommand {
     @Option(name: .shortAndLong, help: "Mailbox")
     var mailbox: String = "INBOX"
     
-    @Option(name: .shortAndLong, help: "IDLE cycle interval in seconds (DONE → NOOP → re-IDLE)")
-    var cycle: Int = 240
+    @Option(name: .shortAndLong, help: "IDLE heartbeat interval in seconds (DONE → NOOP → re-IDLE)")
+    var cycle: Int = 300
 
     func run() throws {
         runAsyncBlock {
@@ -605,9 +605,11 @@ struct Idle: ParsableCommand {
             
             let status = try await server.selectMailbox(mailbox)
             print("📬 \(mailbox): \(status.messageCount) messages")
-            print("Listening for IDLE events (cycle: \(cycle)s, Ctrl+C to stop)...\n")
+            print("Listening for IDLE events (heartbeat: \(cycle)s, Ctrl+C to stop)...\n")
             
-            let idleSession = try await server.idle(on: mailbox, cycleInterval: TimeInterval(cycle))
+            var idleConfiguration = IMAPIdleConfiguration.default
+            idleConfiguration.noopInterval = TimeInterval(cycle)
+            let idleSession = try await server.idle(on: mailbox, configuration: idleConfiguration)
             
             let formatter = DateFormatter()
             formatter.dateFormat = "HH:mm:ss"

@@ -1171,7 +1171,12 @@ public actor IMAPServer {
      - Throws: An error if the command execution fails
      */
     private func executeCommand<CommandType: IMAPCommand>(_ command: CommandType) async throws -> CommandType.ResultType {
-        try await primaryConnection.executeCommand(command)
+        if let authentication, !primaryConnection.isAuthenticated {
+            logger.info("Primary connection not authenticated; re-authenticating before command")
+            try await authentication.authenticate(on: primaryConnection)
+        }
+
+        return try await primaryConnection.executeCommand(command)
     }
 
     private func append(rawMessage: String, to mailbox: String, flags: [Flag], internalDate: Date?) async throws -> AppendResult {

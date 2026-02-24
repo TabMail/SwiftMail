@@ -41,6 +41,8 @@ final class IdleHandler: BaseIMAPCommandHandler<Void>, IMAPCommandHandler, @unch
 
     override func handleUntaggedResponse(_ response: Response) -> Bool {
         switch response {
+        case .idleStarted:
+            return true
         case .untagged(let payload):
             return handlePayload(payload)
         case .fetch(let fetch):

@@ -13,6 +13,7 @@ final class IMAPConnection {
     private var channel: Channel?
     private var commandTagCounter: Int = 0
     private var capabilities: Set<NIOIMAPCore.Capability> = []
+    private var isSessionAuthenticated: Bool = false
     private var idleHandler: IdleHandler?
     private var idleTerminationInProgress: Bool = false
     private let commandQueue = IMAPCommandQueue()
@@ -41,6 +42,10 @@ final class IMAPConnection {
 
     var capabilitiesSnapshot: Set<NIOIMAPCore.Capability> {
         capabilities
+    }
+
+    var isAuthenticated: Bool {
+        isSessionAuthenticated
     }
 
     func supportsCapability(_ check: (Capability) -> Bool) -> Bool {
@@ -76,6 +81,7 @@ final class IMAPConnection {
 
         let channel = try await bootstrap.connect(host: host, port: port).get()
         self.channel = channel
+        self.isSessionAuthenticated = false
 
         // Add the persistent untagged response buffer as the LAST handler in the pipeline.
         // Transient command handlers are added BEFORE it (position: .before(responseBuffer)).
@@ -100,6 +106,7 @@ final class IMAPConnection {
     func login(username: String, password: String) async throws {
         let command = LoginCommand(username: username, password: password)
         let loginCapabilities = try await executeCommand(command)
+        isSessionAuthenticated = true
         try await refreshCapabilities(using: loginCapabilities)
     }
 
@@ -253,11 +260,13 @@ final class IMAPConnection {
     func disconnect() async throws {
         guard let channel = self.channel else {
             logger.warning("Attempted to disconnect when channel was already nil")
+            isSessionAuthenticated = false
             return
         }
 
         channel.close(promise: nil)
         self.channel = nil
+        self.isSessionAuthenticated = false
     }
 
     // MARK: - Private Helpers
@@ -328,6 +337,7 @@ final class IMAPConnection {
             await handleConnectionTerminationInResponses(handler.untaggedResponses)
             duplexLogger.flushInboundBuffer()
 
+            isSessionAuthenticated = true
             try await refreshCapabilities(using: refreshedCapabilities)
         } catch {
             scheduledTask.cancel()
@@ -541,6 +551,7 @@ final class IMAPConnection {
         if let channel = self.channel, !channel.isActive {
             logger.info("Channel is no longer active, clearing channel reference")
             self.channel = nil
+            self.isSessionAuthenticated = false
         }
     }
 

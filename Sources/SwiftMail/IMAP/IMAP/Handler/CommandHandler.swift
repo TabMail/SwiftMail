@@ -71,12 +71,28 @@ class BaseIMAPCommandHandler<ResultType: Sendable>: CommandHandler, RemovableCha
     /// Succeed the promise with a result
     /// - Parameter result: The result to succeed with
     func succeedWithResult(_ result: ResultType) {
+        let shouldSucceed = lock.withLock { () -> Bool in
+            if isCompleted {
+                return false
+            }
+            isCompleted = true
+            return true
+        }
+        guard shouldSucceed else { return }
         promise.succeed(result)
     }
     
     /// Fail the promise with an error
     /// - Parameter error: The error to fail with
     func failWithError(_ error: Error) {
+        let shouldFail = lock.withLock { () -> Bool in
+            if isCompleted {
+                return false
+            }
+            isCompleted = true
+            return true
+        }
+        guard shouldFail else { return }
         promise.fail(error)
     }
     
@@ -182,7 +198,17 @@ class BaseIMAPCommandHandler<ResultType: Sendable>: CommandHandler, RemovableCha
         // Always forward the response to the next handler
         context.fireChannelRead(data)
     }
-    
+    /// Channel inactive method from ChannelInboundHandler
+    func channelInactive(context: ChannelHandlerContext) {
+        let shouldFail = lock.withLock { !isCompleted }
+        if shouldFail {
+            failWithError(IMAPError.connectionFailed("Connection closed before command completed"))
+            handleCompletion(context: context)
+        }
+
+        context.fireChannelInactive()
+    }
+
     /// Error caught method from ChannelInboundHandler
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         // Handle the error

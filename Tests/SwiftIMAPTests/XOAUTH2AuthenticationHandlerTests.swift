@@ -209,6 +209,38 @@ struct XOAUTH2AuthenticationHandlerTests {
         }
     }
 
+
+    @Test
+    func testChannelCloseFailsPendingAuthentication() async throws {
+        let (channel, promise, _) = try await setUpChannel(tag: "A005", expectsChallenge: false)
+
+        let command = TaggedCommand(
+            tag: "A005",
+            command: .authenticate(
+                mechanism: AuthenticationMechanism("XOAUTH2"),
+                initialResponse: InitialResponse(makeCredentialBuffer(using: channel.allocator))
+            )
+        )
+
+        try await channel.writeAndFlush(IMAPClientHandler.OutboundIn.part(.tagged(command)))
+        _ = try channel.readOutbound(as: ByteBuffer.self)
+
+        try await channel.close().get()
+
+        do {
+            _ = try await promise.futureResult.get()
+            Issue.record("Expected connection failure when channel closes")
+        } catch let error as IMAPError {
+            if case .connectionFailed(let message) = error {
+                #expect(message.contains("Connection closed before command completed"))
+            } else {
+                Issue.record("Unexpected IMAPError: \(error)")
+            }
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+    }
+
     private func setUpChannel(tag: String, expectsChallenge: Bool) async throws -> (EmbeddedChannel, EventLoopPromise<[Capability]>, XOAUTH2AuthenticationHandler) {
         let channel = EmbeddedChannel()
         try await channel.pipeline.addHandler(IMAPClientHandler())

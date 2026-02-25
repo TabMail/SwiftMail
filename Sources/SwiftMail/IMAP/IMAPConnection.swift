@@ -426,7 +426,16 @@ final class IMAPConnection {
         try await channel.pipeline.addHandler(handler, position: .before(responseBuffer)).get()
         responseBuffer.hasActiveHandler = true
 
-        let initialResponse = shouldUseInlineInitialResponse ? InitialResponse(credentialBuffer) : nil
+        let initialResponse: InitialResponse?
+        if shouldUseInlineInitialResponse {
+            initialResponse = InitialResponse(credentialBuffer)
+        } else if supportsSASLIR {
+            // Some servers behave better when SASL-IR is explicitly present but empty ("="),
+            // then credentials are sent on the continuation challenge.
+            initialResponse = .empty
+        } else {
+            initialResponse = nil
+        }
 
         let command = TaggedCommand(tag: tag, command: .authenticate(mechanism: mechanism, initialResponse: initialResponse))
         let wrapped = IMAPClientHandler.OutboundIn.part(CommandStreamPart.tagged(command))

@@ -23,6 +23,7 @@ final class UntaggedResponseBuffer: ChannelInboundHandler, RemovableChannelHandl
     private let lock = NIOLock()
     private var buffer: [Response] = []
     private var _hasActiveHandler: Bool = false
+    private var connectionTerminationReasons: [String] = []
     private let logger = Logger(label: "com.cocoanetics.SwiftMail.UntaggedResponseBuffer")
 
     /// Whether a transient command handler is currently active in the pipeline.
@@ -33,6 +34,7 @@ final class UntaggedResponseBuffer: ChannelInboundHandler, RemovableChannelHandl
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let response = unwrapInboundIn(data)
+        let terminationReason = Self.terminationReason(for: response)
 
         let shouldBuffer = lock.withLock { () -> Bool in
             guard !_hasActiveHandler else { return false }
@@ -56,6 +58,9 @@ final class UntaggedResponseBuffer: ChannelInboundHandler, RemovableChannelHandl
         if shouldBuffer {
             lock.withLock {
                 buffer.append(response)
+                if let terminationReason {
+                    connectionTerminationReasons.append(terminationReason)
+                }
             }
             logger.debug("Buffered untagged response (no active handler): \(String(describing: response).prefix(120))")
         }
@@ -75,8 +80,44 @@ final class UntaggedResponseBuffer: ChannelInboundHandler, RemovableChannelHandl
         }
     }
 
+    /// Whether a connection-termination signal (`BYE` or `fatal`) was observed while no handler was active.
+    var hasBufferedConnectionTermination: Bool {
+        lock.withLock { !connectionTerminationReasons.isEmpty }
+    }
+
+    /// Consume and clear buffered connection-termination reasons.
+    func consumeBufferedConnectionTerminationReasons() -> [String] {
+        lock.withLock {
+            defer { connectionTerminationReasons.removeAll(keepingCapacity: true) }
+            return connectionTerminationReasons
+        }
+    }
+
+    /// Clear all buffer state, typically after a disconnect/reconnect boundary.
+    func reset() {
+        lock.withLock {
+            buffer.removeAll(keepingCapacity: true)
+            connectionTerminationReasons.removeAll(keepingCapacity: true)
+            _hasActiveHandler = false
+        }
+    }
+
     /// Number of currently buffered responses.
     var bufferedCount: Int {
         lock.withLock { buffer.count }
+    }
+
+    private static func terminationReason(for response: Response) -> String? {
+        if case .untagged(let payload) = response,
+           case .conditionalState(let status) = payload,
+           case .bye(let text) = status {
+            return text.text
+        }
+
+        if case .fatal(let text) = response {
+            return text.text
+        }
+
+        return nil
     }
 }

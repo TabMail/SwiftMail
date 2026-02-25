@@ -118,7 +118,9 @@ public actor IMAPServer {
             group: group,
             loggerLabel: primaryLoggerLabel,
             outboundLabel: outboundLabel,
-            inboundLabel: inboundLabel
+            inboundLabel: inboundLabel,
+            connectionID: "primary",
+            connectionRole: "primary"
         )
     }
     
@@ -237,9 +239,12 @@ public actor IMAPServer {
 
     // MARK: - Connection Management
 
-    private func makeIdleConnection(sessionID: UUID) -> IMAPConnection {
+    private func makeIdleConnection(sessionID: UUID, mailbox: String) -> IMAPConnection {
         let shortID = String(sessionID.uuidString.prefix(8))
         let suffix = "idle-\(shortID)"
+        let sanitizedMailbox = mailbox
+            .replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
 
         let loggerLabel = "com.cocoanetics.SwiftMail.IMAPServer.\(suffix)"
         let outboundLabel = "com.cocoanetics.SwiftMail.IMAP_OUT.\(suffix)"
@@ -251,7 +256,9 @@ public actor IMAPServer {
             group: group,
             loggerLabel: loggerLabel,
             outboundLabel: outboundLabel,
-            inboundLabel: inboundLabel
+            inboundLabel: inboundLabel,
+            connectionID: shortID,
+            connectionRole: "idle:\(sanitizedMailbox)"
         )
     }
 
@@ -379,9 +386,9 @@ public actor IMAPServer {
     /// or by calling `disconnect()` on the server.
     ///
     /// This stream is self-healing:
-    /// - IDLE is renewed every `configuration.renewalInterval` (default 25 minutes)
-    /// - periodic DONE → NOOP → re-IDLE checkpoints run every `configuration.noopInterval`
-    ///   (default 5 minutes) to keep the socket alive and surface missed updates
+    /// - IDLE is renewed every `configuration.renewalInterval` (default 285 seconds)
+    /// - optional DONE → NOOP → re-IDLE probes run every `configuration.noopInterval`
+    ///   when `configuration.postIdleNoopEnabled` is true
     /// - dropped connections are automatically reconnected and re-selected
     ///
     /// - Important: If other connections have the same mailbox selected, refresh them
@@ -397,7 +404,7 @@ public actor IMAPServer {
         }
 
         let sessionID = UUID()
-        let connection = makeIdleConnection(sessionID: sessionID)
+        let connection = makeIdleConnection(sessionID: sessionID, mailbox: mailbox)
         idleConnections[sessionID] = IdleConnection(mailbox: mailbox, connection: connection)
 
         do {
@@ -411,6 +418,8 @@ public actor IMAPServer {
             }
 
             let continuation = continuationRef!
+            let serverHost = self.host
+            let serverPort = self.port
 
             let cycleTask = Task.detached {
                 enum CycleTrigger: String {
@@ -423,20 +432,33 @@ public actor IMAPServer {
                     case streamEnded(sawBye: Bool)
                 }
 
-                let cycleLogger = Logger(label: "com.cocoanetics.SwiftMail.IdleCycle")
+                let cycleLoggerLabel = "com.cocoanetics.SwiftMail.IdleCycle.\(connection.identifier)"
+                var cycleLogger = Logger(label: cycleLoggerLabel)
+                cycleLogger[metadataKey: "imap.host"] = .string(serverHost)
+                cycleLogger[metadataKey: "imap.port"] = .stringConvertible(serverPort)
+                cycleLogger[metadataKey: "imap.mailbox"] = .string(mailbox)
+                cycleLogger[metadataKey: "imap.connection_id"] = .string(connection.identifier)
+                cycleLogger[metadataKey: "imap.connection_role"] = .string(connection.role)
+
                 let reconnectDelay: (Int) -> TimeInterval = { attempt in
                     let exponent = min(max(attempt - 1, 0), 10)
                     let multiplier = Double(1 << exponent)
-                    return min(idleConfiguration.reconnectBaseDelay * multiplier, idleConfiguration.reconnectMaxDelay)
+                    let baseDelay = min(idleConfiguration.reconnectBaseDelay * multiplier, idleConfiguration.reconnectMaxDelay)
+                    let jitterFactor = idleConfiguration.reconnectJitterFactor
+                    guard jitterFactor > 0 else { return baseDelay }
+                    let jittered = baseDelay * (1 + Double.random(in: -jitterFactor...jitterFactor))
+                    return max(0, jittered)
                 }
 
                 var cycleCount = 0
                 var reconnectAttempt = 0
-                var nextNoopAt = Date().addingTimeInterval(idleConfiguration.noopInterval)
+                var nextNoopAt: Date? = idleConfiguration.postIdleNoopEnabled
+                    ? Date().addingTimeInterval(idleConfiguration.noopInterval)
+                    : nil
                 var nextRenewalAt = Date().addingTimeInterval(idleConfiguration.renewalInterval)
 
                 cycleLogger.info(
-                    "Idle reliability task started for mailbox '\(mailbox)' (noop=\(idleConfiguration.noopInterval)s renewal=\(idleConfiguration.renewalInterval)s)"
+                    "Idle reliability task started for mailbox '\(mailbox)' (postIdleNoop=\(idleConfiguration.postIdleNoopEnabled) noopInterval=\(idleConfiguration.noopInterval)s renewal=\(idleConfiguration.renewalInterval)s)"
                 )
 
                 while !Task.isCancelled {
@@ -447,7 +469,7 @@ public actor IMAPServer {
                         let idleStream = try await connection.idle()
 
                         let now = Date()
-                        let secondsToNoop = max(nextNoopAt.timeIntervalSince(now), 0)
+                        let secondsToNoop = nextNoopAt.map { max($0.timeIntervalSince(now), 0) } ?? .infinity
                         let secondsToRenewal = max(nextRenewalAt.timeIntervalSince(now), 0)
                         let trigger: CycleTrigger = secondsToRenewal <= secondsToNoop ? .renewal : .noop
                         let waitSeconds = trigger == .renewal ? secondsToRenewal : secondsToNoop
@@ -492,10 +514,18 @@ public actor IMAPServer {
                             cycleLogger.debug("Cycle \(cycleCount): checkpoint=\(checkpoint.rawValue), sending DONE")
                             try await connection.done(timeoutSeconds: idleConfiguration.doneTimeout)
 
-                            cycleLogger.debug("Cycle \(cycleCount): sending NOOP")
-                            let noopEvents = try await connection.noop()
-                            if !noopEvents.isEmpty {
-                                cycleLogger.debug("Cycle \(cycleCount): NOOP returned \(noopEvents.count) event(s)")
+                            var noopEvents: [IMAPServerEvent] = []
+                            if idleConfiguration.postIdleNoopEnabled {
+                                if idleConfiguration.postIdleNoopDelay > 0 {
+                                    try? await Task.sleep(nanoseconds: UInt64(idleConfiguration.postIdleNoopDelay * 1_000_000_000))
+                                }
+                                cycleLogger.debug("Cycle \(cycleCount): sending NOOP")
+                                noopEvents = try await connection.noop()
+                                if !noopEvents.isEmpty {
+                                    cycleLogger.debug("Cycle \(cycleCount): NOOP returned \(noopEvents.count) event(s)")
+                                }
+                            } else {
+                                cycleLogger.debug("Cycle \(cycleCount): post-IDLE NOOP probe disabled")
                             }
                             for event in noopEvents {
                                 continuation.yield(event)
@@ -509,8 +539,19 @@ public actor IMAPServer {
                                 continuation.yield(event)
                             }
 
+                            let sawByeEvent = (noopEvents + bufferedEvents).contains { event in
+                                if case .bye = event { return true }
+                                return false
+                            }
+                            if sawByeEvent {
+                                cycleLogger.warning("Cycle \(cycleCount): observed BYE during checkpoint processing; reconnecting")
+                                throw IMAPConnectionError.disconnected
+                            }
+
                             let resumedAt = Date()
-                            nextNoopAt = resumedAt.addingTimeInterval(idleConfiguration.noopInterval)
+                            nextNoopAt = idleConfiguration.postIdleNoopEnabled
+                                ? resumedAt.addingTimeInterval(idleConfiguration.noopInterval)
+                                : nil
                             if checkpoint == .renewal || resumedAt >= nextRenewalAt {
                                 nextRenewalAt = resumedAt.addingTimeInterval(idleConfiguration.renewalInterval)
                                 cycleLogger.debug("Cycle \(cycleCount): renewed IDLE window")
@@ -542,7 +583,9 @@ public actor IMAPServer {
                             _ = try await connection.executeCommand(SelectMailboxCommand(mailboxName: mailbox))
 
                             let reconnectedAt = Date()
-                            nextNoopAt = reconnectedAt.addingTimeInterval(idleConfiguration.noopInterval)
+                            nextNoopAt = idleConfiguration.postIdleNoopEnabled
+                                ? reconnectedAt.addingTimeInterval(idleConfiguration.noopInterval)
+                                : nil
                             nextRenewalAt = reconnectedAt.addingTimeInterval(idleConfiguration.renewalInterval)
 
                             cycleLogger.info("Reconnected IDLE session for mailbox '\(mailbox)'")
@@ -574,12 +617,13 @@ public actor IMAPServer {
     /// Compatibility wrapper for the previous IDLE API.
     ///
     /// The provided interval maps to heartbeat NOOP checkpoints.
-    /// Renewal remains at the default 25 minutes unless overridden via
+    /// Renewal remains at the default strategy interval unless overridden via
     /// `idle(on:configuration:)`.
     @available(*, deprecated, message: "Use idle(on:configuration:) for full reliability configuration.")
     public func idle(on mailbox: String, cycleInterval: TimeInterval) async throws -> IMAPIdleSession {
         var configuration = IMAPIdleConfiguration.default
         configuration.noopInterval = cycleInterval
+        configuration.postIdleNoopEnabled = true
         return try await idle(on: mailbox, configuration: configuration)
     }
     

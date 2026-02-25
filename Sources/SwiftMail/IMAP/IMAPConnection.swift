@@ -10,6 +10,9 @@ final class IMAPConnection {
     private let host: String
     private let port: Int
     private let group: EventLoopGroup
+    private let connectionID: String
+    private let connectionRole: String
+    private let connectionContext: String
     private var channel: Channel?
     private var commandTagCounter: Int = 0
     private var capabilities: Set<NIOIMAPCore.Capability> = []
@@ -22,15 +25,46 @@ final class IMAPConnection {
     private let logger: Logging.Logger
     private let duplexLogger: IMAPLogger
 
-    init(host: String, port: Int, group: EventLoopGroup, loggerLabel: String, outboundLabel: String, inboundLabel: String) {
+    init(
+        host: String,
+        port: Int,
+        group: EventLoopGroup,
+        loggerLabel: String,
+        outboundLabel: String,
+        inboundLabel: String,
+        connectionID: String,
+        connectionRole: String
+    ) {
         self.host = host
         self.port = port
         self.group = group
+        self.connectionID = connectionID
+        self.connectionRole = connectionRole
+        self.connectionContext = "[imap \(host):\(port) role=\(connectionRole) conn=\(connectionID)]"
 
-        self.logger = Logging.Logger(label: loggerLabel)
-        let outboundLogger = Logging.Logger(label: outboundLabel)
-        let inboundLogger = Logging.Logger(label: inboundLabel)
-        self.duplexLogger = IMAPLogger(outboundLogger: outboundLogger, inboundLogger: inboundLogger)
+        var logger = Logging.Logger(label: loggerLabel)
+        logger[metadataKey: "imap.host"] = .string(host)
+        logger[metadataKey: "imap.port"] = .stringConvertible(port)
+        logger[metadataKey: "imap.connection_id"] = .string(connectionID)
+        logger[metadataKey: "imap.connection_role"] = .string(connectionRole)
+        self.logger = logger
+
+        var outboundLogger = Logging.Logger(label: outboundLabel)
+        outboundLogger[metadataKey: "imap.host"] = .string(host)
+        outboundLogger[metadataKey: "imap.port"] = .stringConvertible(port)
+        outboundLogger[metadataKey: "imap.connection_id"] = .string(connectionID)
+        outboundLogger[metadataKey: "imap.connection_role"] = .string(connectionRole)
+
+        var inboundLogger = Logging.Logger(label: inboundLabel)
+        inboundLogger[metadataKey: "imap.host"] = .string(host)
+        inboundLogger[metadataKey: "imap.port"] = .stringConvertible(port)
+        inboundLogger[metadataKey: "imap.connection_id"] = .string(connectionID)
+        inboundLogger[metadataKey: "imap.connection_role"] = .string(connectionRole)
+        self.duplexLogger = IMAPLogger(
+            outboundLogger: outboundLogger,
+            inboundLogger: inboundLogger,
+            contextPrefix: connectionContext
+        )
     }
 
     var isConnected: Bool {
@@ -48,11 +82,48 @@ final class IMAPConnection {
         isSessionAuthenticated
     }
 
+    var identifier: String {
+        connectionID
+    }
+
+    var role: String {
+        connectionRole
+    }
+
     func supportsCapability(_ check: (Capability) -> Bool) -> Bool {
         capabilities.contains(where: check)
     }
 
     func connect() async throws {
+        try await commandQueue.run { [self] in
+            try await self.connectBody()
+        }
+    }
+
+    func done(timeoutSeconds: TimeInterval = 15) async throws {
+        try await commandQueue.run { [self] in
+            try await self.doneBody(timeoutSeconds: timeoutSeconds)
+        }
+    }
+
+    func disconnect() async throws {
+        try await commandQueue.run { [self] in
+            try await self.disconnectBody()
+        }
+    }
+
+    private func connectBody() async throws {
+        clearInvalidChannel()
+        if channel?.isActive == true {
+            logger.debug("\(connectionContext) connect requested while channel is already active")
+            return
+        }
+
+        // Any buffered state belongs to a previous transport and must not leak.
+        responseBuffer.reset()
+        idleHandler = nil
+        idleTerminationInProgress = false
+
         let sslContext = try NIOSSLContext(configuration: TLSConfiguration.makeClientConfiguration())
         let host = self.host
 
@@ -90,10 +161,85 @@ final class IMAPConnection {
         // flow directly to the buffer which captures them for later draining.
         try await channel.pipeline.addHandler(responseBuffer).get()
 
-        logger.info("Connected to IMAP server with 1MB buffer limit for large responses")
+        logger.info("\(connectionContext) Connected to IMAP server with 1MB buffer limit for large responses")
 
         let greetingCapabilities: [Capability] = try await executeHandlerOnly(handlerType: IMAPGreetingHandler.self, timeoutSeconds: 5)
         try await refreshCapabilities(using: greetingCapabilities)
+    }
+
+    private func doneBody(timeoutSeconds: TimeInterval = 15) async throws {
+        guard let handler = idleHandler else {
+            logger.debug("\(connectionContext) No active IDLE session, skipping DONE command")
+            return
+        }
+
+        guard let channel = self.channel, channel.isActive else {
+            logger.warning("\(connectionContext) Cannot send DONE because channel is not active")
+            idleHandler = nil
+            responseBuffer.hasActiveHandler = false
+            throw IMAPError.connectionFailed("Channel is not active")
+        }
+
+        guard !idleTerminationInProgress else {
+            try await waitForIdleHandlerCompletion(handler, timeoutSeconds: timeoutSeconds)
+            return
+        }
+
+        idleTerminationInProgress = true
+
+        defer {
+            idleTerminationInProgress = false
+            idleHandler = nil
+            responseBuffer.hasActiveHandler = false
+        }
+
+        do {
+            try await waitForIdleStartIfNeeded(handler, timeoutSeconds: min(timeoutSeconds, 5))
+            _ = try await waitForFutureWithTimeout(
+                channel.writeAndFlush(IMAPClientHandler.OutboundIn.part(.idleDone)),
+                timeoutSeconds: timeoutSeconds
+            )
+            try await waitForIdleHandlerCompletion(handler, timeoutSeconds: timeoutSeconds)
+            duplexLogger.flushInboundBuffer()
+        } catch {
+            duplexLogger.flushInboundBuffer()
+            logErrorDiagnostics(error: error, operation: "DONE")
+
+            if error is CancellationError {
+                throw error
+            }
+
+            if let imapError = error as? IMAPError, case .timeout = imapError {
+                logger.warning("\(connectionContext) Timed out waiting for IDLE termination after DONE")
+            } else {
+                logger.warning("\(connectionContext) Failed to terminate IDLE after DONE: \(error)")
+            }
+
+            try? await disconnectBody()
+            throw error
+        }
+    }
+
+    private func disconnectBody() async throws {
+        guard let channel = self.channel else {
+            logger.warning("\(connectionContext) Attempted to disconnect when channel was already nil")
+            isSessionAuthenticated = false
+            responseBuffer.reset()
+            idleHandler = nil
+            idleTerminationInProgress = false
+            return
+        }
+
+        do {
+            try await channel.close().get()
+        } catch {
+            logger.debug("\(connectionContext) Channel close during disconnect reported: \(error)")
+        }
+        self.channel = nil
+        self.isSessionAuthenticated = false
+        self.idleHandler = nil
+        self.idleTerminationInProgress = false
+        self.responseBuffer.reset()
     }
 
     @discardableResult func fetchCapabilities() async throws -> [Capability] {
@@ -142,57 +288,6 @@ final class IMAPConnection {
         return stream
     }
 
-    func done(timeoutSeconds: TimeInterval = 15) async throws {
-        guard let handler = idleHandler else {
-            logger.debug("No active IDLE session, skipping DONE command")
-            return
-        }
-
-        guard let channel = self.channel, channel.isActive else {
-            logger.warning("Cannot send DONE because channel is not active")
-            idleHandler = nil
-            responseBuffer.hasActiveHandler = false
-            throw IMAPError.connectionFailed("Channel is not active")
-        }
-
-        guard !idleTerminationInProgress else {
-            try await waitForIdleHandlerCompletion(handler, timeoutSeconds: timeoutSeconds)
-            return
-        }
-
-        idleTerminationInProgress = true
-
-        defer {
-            idleTerminationInProgress = false
-            idleHandler = nil
-            responseBuffer.hasActiveHandler = false
-        }
-
-        do {
-            _ = try await waitForFutureWithTimeout(
-                channel.writeAndFlush(IMAPClientHandler.OutboundIn.part(.idleDone)),
-                timeoutSeconds: timeoutSeconds
-            )
-            try await waitForIdleHandlerCompletion(handler, timeoutSeconds: timeoutSeconds)
-            duplexLogger.flushInboundBuffer()
-        } catch {
-            duplexLogger.flushInboundBuffer()
-
-            if error is CancellationError {
-                throw error
-            }
-
-            if let imapError = error as? IMAPError, case .timeout = imapError {
-                logger.warning("Timed out waiting for IDLE termination after DONE")
-            } else {
-                logger.warning("Failed to terminate IDLE after DONE: \(error)")
-            }
-
-            try? await disconnect()
-            throw error
-        }
-    }
-
     func noop() async throws -> [IMAPServerEvent] {
         let command = NoopCommand()
         return try await executeCommand(command)
@@ -206,7 +301,14 @@ final class IMAPConnection {
         let raw = responseBuffer.drainBuffer()
         guard !raw.isEmpty else { return [] }
 
-        logger.debug("Draining \(raw.count) buffered response(s)")
+        let terminationReasons = responseBuffer.consumeBufferedConnectionTerminationReasons()
+        if !terminationReasons.isEmpty {
+            logger.warning(
+                "\(connectionContext) Draining \(terminationReasons.count) buffered connection termination signal(s): \(terminationReasons.joined(separator: " | "))"
+            )
+        }
+
+        logger.debug("\(connectionContext) Draining \(raw.count) buffered response(s)")
         var events: [IMAPServerEvent] = []
 
         for response in raw {
@@ -267,18 +369,6 @@ final class IMAPConnection {
         return events
     }
 
-    func disconnect() async throws {
-        guard let channel = self.channel else {
-            logger.warning("Attempted to disconnect when channel was already nil")
-            isSessionAuthenticated = false
-            return
-        }
-
-        channel.close(promise: nil)
-        self.channel = nil
-        self.isSessionAuthenticated = false
-    }
-
     // MARK: - Private Helpers
 
     private func refreshCapabilities(using reportedCapabilities: [Capability]) async throws {
@@ -299,12 +389,13 @@ final class IMAPConnection {
         }
 
         try await waitForIdleCompletionIfNeeded()
+        try await recycleConnectionIfBufferedTerminationIfNeeded(operation: "XOAUTH2 authenticate")
 
         clearInvalidChannel()
 
         if self.channel == nil {
-            logger.info("Channel is nil, re-establishing connection before authentication")
-            try await connect()
+            logger.info("\(connectionContext) Channel is nil, re-establishing connection before authentication")
+            try await connectBody()
         }
 
         guard let channel = self.channel else {
@@ -356,8 +447,14 @@ final class IMAPConnection {
             await handleConnectionTerminationInResponses(handler.untaggedResponses)
             duplexLogger.flushInboundBuffer()
 
+            logErrorDiagnostics(error: error, operation: "XOAUTH2 authenticate")
+
             if !handler.isCompleted {
                 try? await channel.pipeline.removeHandler(handler)
+            }
+
+            if shouldRecycleConnection(for: error) {
+                try? await disconnectBody()
             }
 
             throw error
@@ -374,8 +471,15 @@ final class IMAPConnection {
         }
 
         idleTerminationInProgress = false
+        try await recycleConnectionIfBufferedTerminationIfNeeded(operation: "IDLE start")
+        clearInvalidChannel()
 
-        guard let channel = self.channel else {
+        if self.channel == nil {
+            logger.info("\(connectionContext) Channel is nil, re-establishing connection before starting IDLE")
+            try await connectBody()
+        }
+
+        guard let channel = self.channel, channel.isActive else {
             throw IMAPError.connectionFailed("Channel not initialized")
         }
 
@@ -384,12 +488,25 @@ final class IMAPConnection {
         let handler = IdleHandler(commandTag: tag, promise: promise, continuation: continuation)
         idleHandler = handler
 
-        try await channel.pipeline.addHandler(handler, position: .before(responseBuffer)).get()
-        responseBuffer.hasActiveHandler = true
-        let command = IdleCommand()
-        let tagged = command.toTaggedCommand(tag: tag)
-        let wrapped = IMAPClientHandler.OutboundIn.part(CommandStreamPart.tagged(tagged))
-        try await channel.writeAndFlush(wrapped).get()
+        do {
+            try await channel.pipeline.addHandler(handler, position: .before(responseBuffer)).get()
+            responseBuffer.hasActiveHandler = true
+            let command = IdleCommand()
+            let tagged = command.toTaggedCommand(tag: tag)
+            let wrapped = IMAPClientHandler.OutboundIn.part(CommandStreamPart.tagged(tagged))
+            try await channel.writeAndFlush(wrapped).get()
+        } catch {
+            responseBuffer.hasActiveHandler = false
+            idleHandler = nil
+            if !handler.isCompleted {
+                try? await channel.pipeline.removeHandler(handler)
+            }
+            logErrorDiagnostics(error: error, operation: "IDLE start")
+            if shouldRecycleConnection(for: error) {
+                try? await disconnectBody()
+            }
+            throw error
+        }
     }
 
     private func handleConnectionTerminationInResponses(_ untaggedResponses: [Response]) async {
@@ -397,11 +514,11 @@ final class IMAPConnection {
             if case .untagged(let payload) = response,
                case .conditionalState(let status) = payload,
                case .bye = status {
-                try? await self.disconnect()
+                try? await self.disconnectBody()
                 break
             }
             if case .fatal = response {
-                try? await self.disconnect()
+                try? await self.disconnectBody()
                 break
             }
         }
@@ -412,11 +529,33 @@ final class IMAPConnection {
         do {
             try await waitForIdleHandlerCompletion(handler, timeoutSeconds: timeoutSeconds)
         } catch {
-            logger.warning("IDLE handler did not complete in time; resetting connection before continuing")
+            logger.warning("\(connectionContext) IDLE handler did not complete in time; resetting connection before continuing")
             idleHandler = nil
             responseBuffer.hasActiveHandler = false
-            try? await disconnect()
+            try? await disconnectBody()
             throw error
+        }
+    }
+
+    private func waitForIdleStartIfNeeded(_ handler: IdleHandler, timeoutSeconds: TimeInterval) async throws {
+        guard !handler.hasEnteredIdleState else { return }
+
+        let pollIntervalNanos: UInt64 = 25_000_000 // 25ms
+        let start = Date()
+        while !handler.hasEnteredIdleState {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+
+            if Date().timeIntervalSince(start) >= timeoutSeconds {
+                throw IMAPError.timeout
+            }
+
+            if self.channel?.isActive != true {
+                throw IMAPError.connectionFailed("Channel became inactive before IDLE confirmation")
+            }
+
+            try? await Task.sleep(nanoseconds: pollIntervalNanos)
         }
     }
 
@@ -445,6 +584,49 @@ final class IMAPConnection {
         return try await timeoutPromise.futureResult.get()
     }
 
+    private func recycleConnectionIfBufferedTerminationIfNeeded(operation: String) async throws {
+        guard responseBuffer.hasBufferedConnectionTermination else { return }
+        let reasons = responseBuffer.consumeBufferedConnectionTerminationReasons()
+        let reasonSummary = reasons.isEmpty ? "<unknown>" : reasons.joined(separator: " | ")
+        logger.warning("\(connectionContext) Buffered BYE/fatal detected before \(operation). Recycling connection. reasons=\(reasonSummary)")
+        try await disconnectBody()
+    }
+
+    private func shouldRecycleConnection(for error: Error) -> Bool {
+        if error is CancellationError {
+            return false
+        }
+
+        if let imapError = error as? IMAPError {
+            switch imapError {
+            case .connectionFailed, .timeout:
+                return true
+            default:
+                break
+            }
+        }
+
+        let description = String(describing: error).lowercased()
+        return description.contains("decodererror")
+            || description.contains("parsererror")
+            || description.contains("channel is not active")
+            || description.contains("connection reset by peer")
+            || description.contains("broken pipe")
+            || description.contains("eof")
+            || description.contains("invalid state")
+    }
+
+    private func logErrorDiagnostics(error: Error, operation: String) {
+        let active = channel?.isActive ?? false
+        let diagnostics = """
+        \(connectionContext) \(operation) failed: \(error); \
+        channelActive=\(active) authenticated=\(isSessionAuthenticated) \
+        idleHandlerActive=\(idleHandler != nil) idleTerminationInProgress=\(idleTerminationInProgress) \
+        bufferedResponses=\(responseBuffer.bufferedCount) bufferedTermination=\(responseBuffer.hasBufferedConnectionTermination)
+        """
+        logger.error("\(diagnostics)")
+    }
+
     private func makeXOAUTH2InitialResponseBuffer(email: String, accessToken: String) -> ByteBuffer {
         var buffer = ByteBufferAllocator().buffer(capacity: email.utf8.count + accessToken.utf8.count + 32)
         buffer.writeString("user=")
@@ -466,12 +648,13 @@ final class IMAPConnection {
     private func executeCommandBody<CommandType: IMAPCommand>(_ command: CommandType) async throws -> CommandType.ResultType {
         try command.validate()
         try await waitForIdleCompletionIfNeeded()
+        try await recycleConnectionIfBufferedTerminationIfNeeded(operation: String(describing: CommandType.self))
 
         clearInvalidChannel()
 
         if self.channel == nil {
-            logger.info("Channel is nil, re-establishing connection before sending command")
-            try await connect()
+            logger.info("\(connectionContext) Channel is nil, re-establishing connection before sending command")
+            try await connectBody()
         }
 
         guard let channel = self.channel else {
@@ -507,8 +690,13 @@ final class IMAPConnection {
             responseBuffer.hasActiveHandler = false
             await handleConnectionTerminationInResponses(handler.untaggedResponses)
             duplexLogger.flushInboundBuffer()
-
-            resultPromise.fail(error)
+            if !handler.isCompleted {
+                try? await channel.pipeline.removeHandler(handler)
+            }
+            logErrorDiagnostics(error: error, operation: "command \(String(describing: CommandType.self)) [\(tag)]")
+            if shouldRecycleConnection(for: error) {
+                try? await disconnectBody()
+            }
             throw error
         }
     }
@@ -517,11 +705,12 @@ final class IMAPConnection {
         handlerType: HandlerType.Type,
         timeoutSeconds: Int = 5
     ) async throws -> T where HandlerType.ResultType == T {
+        try await recycleConnectionIfBufferedTerminationIfNeeded(operation: String(describing: HandlerType.self))
         clearInvalidChannel()
 
         if self.channel == nil {
-            logger.info("Channel is nil, re-establishing connection before executing handler")
-            try await connect()
+            logger.info("\(connectionContext) Channel is nil, re-establishing connection before executing handler")
+            try await connectBody()
         }
 
         guard let channel = self.channel else {
@@ -554,17 +743,25 @@ final class IMAPConnection {
             responseBuffer.hasActiveHandler = false
             await handleConnectionTerminationInResponses(handler.untaggedResponses)
             duplexLogger.flushInboundBuffer()
-
-            resultPromise.fail(error)
+            if !handler.isCompleted {
+                try? await channel.pipeline.removeHandler(handler)
+            }
+            logErrorDiagnostics(error: error, operation: "handler \(String(describing: HandlerType.self))")
+            if shouldRecycleConnection(for: error) {
+                try? await disconnectBody()
+            }
             throw error
         }
     }
 
     private func clearInvalidChannel() {
         if let channel = self.channel, !channel.isActive {
-            logger.info("Channel is no longer active, clearing channel reference")
+            logger.info("\(connectionContext) Channel is no longer active, clearing channel reference")
             self.channel = nil
             self.isSessionAuthenticated = false
+            self.idleHandler = nil
+            self.idleTerminationInProgress = false
+            self.responseBuffer.reset()
         }
     }
 

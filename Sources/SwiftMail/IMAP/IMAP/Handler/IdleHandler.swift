@@ -12,6 +12,11 @@ final class IdleHandler: BaseIMAPCommandHandler<Void>, IMAPCommandHandler, @unch
 
     private let continuation: AsyncStream<IMAPServerEvent>.Continuation
     private let idleLogger = Logger(label: "com.cocoanetics.SwiftMail.IdleHandler")
+    private var didReceiveIdleStarted = false
+
+    var hasEnteredIdleState: Bool {
+        lock.withLock { didReceiveIdleStarted }
+    }
 
     init(commandTag: String, promise: EventLoopPromise<Void>, continuation: AsyncStream<IMAPServerEvent>.Continuation) {
         self.continuation = continuation
@@ -42,6 +47,9 @@ final class IdleHandler: BaseIMAPCommandHandler<Void>, IMAPCommandHandler, @unch
         case .idleStarted:
             // IDLE confirmation does not complete the command. We must remain
             // installed to receive untagged events and the final tagged OK after DONE.
+            lock.withLock {
+                didReceiveIdleStarted = true
+            }
             return false
         case .untagged(let payload):
             return handlePayload(payload)

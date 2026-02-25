@@ -8,7 +8,7 @@ import Logging
 import NIOIMAPCore
 
 /// Protocol for IMAP command handlers
-protocol IMAPCommandHandler: ChannelInboundHandler, Sendable where ResultType: Sendable {
+protocol IMAPCommandHandler: ChannelInboundHandler, RemovableChannelHandler, Sendable where ResultType: Sendable {
     associatedtype ResultType
     
     /// Initialize the handler
@@ -19,4 +19,7 @@ protocol IMAPCommandHandler: ChannelInboundHandler, Sendable where ResultType: S
     
     /// Get the untagged responses collected during command execution
     var untaggedResponses: [Response] { get }
+
+    /// Whether the handler has already completed and removed itself from the pipeline.
+    var isCompleted: Bool { get }
 }

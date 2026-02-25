@@ -42,6 +42,7 @@ struct IdleHandlerTests {
         try channel.writeInbound(idleConfirmation)
 
         #expect(!handler.isCompleted)
+        #expect(handler.hasEnteredIdleState)
 
         try await channel.writeAndFlush(IMAPClientHandler.OutboundIn.part(.idleDone))
 

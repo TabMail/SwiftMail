@@ -402,11 +402,19 @@ final class IMAPConnection {
             throw IMAPError.connectionFailed("Channel not initialized")
         }
 
-        let expectsChallenge = !capabilities.contains(.saslIR)
         let tag = generateCommandTag()
 
         let handlerPromise = channel.eventLoop.makePromise(of: [Capability].self)
         let credentialBuffer = makeXOAUTH2InitialResponseBuffer(email: email, accessToken: accessToken)
+
+        let supportsSASLIR = capabilities.contains(.saslIR)
+        let saslIRInlineLimitBytes = 1024
+        let shouldUseInlineInitialResponse = supportsSASLIR && credentialBuffer.readableBytes <= saslIRInlineLimitBytes
+        let expectsChallenge = !shouldUseInlineInitialResponse
+
+        if supportsSASLIR && !shouldUseInlineInitialResponse {
+            logger.info("XOAUTH2 payload size \(credentialBuffer.readableBytes) exceeds inline SASL-IR limit \(saslIRInlineLimitBytes); switching to continuation mode")
+        }
         let handler = XOAUTH2AuthenticationHandler(
             commandTag: tag,
             promise: handlerPromise,
@@ -418,7 +426,7 @@ final class IMAPConnection {
         try await channel.pipeline.addHandler(handler, position: .before(responseBuffer)).get()
         responseBuffer.hasActiveHandler = true
 
-        let initialResponse = expectsChallenge ? nil : InitialResponse(credentialBuffer)
+        let initialResponse = shouldUseInlineInitialResponse ? InitialResponse(credentialBuffer) : nil
 
         let command = TaggedCommand(tag: tag, command: .authenticate(mechanism: mechanism, initialResponse: initialResponse))
         let wrapped = IMAPClientHandler.OutboundIn.part(CommandStreamPart.tagged(command))

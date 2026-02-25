@@ -42,6 +42,9 @@ public actor IMAPServer {
     /// Spawned IDLE connections keyed by session ID.
     private var idleConnections: [UUID: IdleConnection] = [:]
 
+    /// User-managed named connections keyed by requested name.
+    private var namedConnections: [String: NamedConnection] = [:]
+
     /// Authentication configuration for spawning new connections.
     private var authentication: Authentication?
     
@@ -71,6 +74,11 @@ public actor IMAPServer {
     private struct IdleConnection {
         let mailbox: String
         let connection: IMAPConnection
+    }
+
+    private struct NamedConnection {
+        let connection: IMAPConnection
+        let handle: IMAPNamedConnection
     }
 
     private enum Authentication {
@@ -237,6 +245,51 @@ public actor IMAPServer {
         try await closeAllConnections()
     }
 
+    /// Retrieve (or create) a reusable named connection.
+    ///
+    /// Calling this method multiple times with the same `name` returns the same
+    /// underlying authenticated connection handle.
+    ///
+    /// - Parameter name: Stable user-defined name for this connection.
+    /// - Returns: A user-controlled named connection.
+    /// - Throws: ``IMAPError/invalidArgument(_:)`` when `name` is empty or
+    ///   ``IMAPError/commandFailed(_:)`` if authentication is not configured.
+    public func connection(named name: String) async throws -> IMAPNamedConnection {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedName.isEmpty else {
+            throw IMAPError.invalidArgument("Connection name must not be empty")
+        }
+
+        if let existing = namedConnections[normalizedName] {
+            return existing.handle
+        }
+
+        guard let authentication else {
+            throw IMAPError.commandFailed("Authentication required before creating a named connection")
+        }
+
+        let connection = makeNamedConnection(name: normalizedName)
+
+        do {
+            try await connection.connect()
+            try await authentication.authenticate(on: connection)
+
+            let handle = IMAPNamedConnection(
+                name: normalizedName,
+                connection: connection,
+                authenticateOnConnection: { connection in
+                    try await authentication.authenticate(on: connection)
+                }
+            )
+
+            namedConnections[normalizedName] = NamedConnection(connection: connection, handle: handle)
+            return handle
+        } catch {
+            try? await connection.disconnect()
+            throw error
+        }
+    }
+
     // MARK: - Connection Management
 
     private func makeIdleConnection(sessionID: UUID, mailbox: String) -> IMAPConnection {
@@ -262,6 +315,43 @@ public actor IMAPServer {
         )
     }
 
+    private func makeNamedConnection(name: String) -> IMAPConnection {
+        let sanitizedName = sanitizedConnectionName(name)
+        let suffix = "named-\(sanitizedName)"
+        let shortID = String(sanitizedName.prefix(24))
+
+        let loggerLabel = "com.cocoanetics.SwiftMail.IMAPServer.\(suffix)"
+        let outboundLabel = "com.cocoanetics.SwiftMail.IMAP_OUT.\(suffix)"
+        let inboundLabel = "com.cocoanetics.SwiftMail.IMAP_IN.\(suffix)"
+
+        return IMAPConnection(
+            host: host,
+            port: port,
+            group: group,
+            loggerLabel: loggerLabel,
+            outboundLabel: outboundLabel,
+            inboundLabel: inboundLabel,
+            connectionID: "named-\(shortID)",
+            connectionRole: "named:\(sanitizedName)"
+        )
+    }
+
+    private func sanitizedConnectionName(_ name: String) -> String {
+        let mapped = name.map { character -> Character in
+            if character.isLetter || character.isNumber || character == "-" || character == "_" {
+                return character
+            }
+            return "_"
+        }
+        let collapsed = String(mapped)
+            .replacingOccurrences(of: "__", with: "_")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        if collapsed.isEmpty {
+            return "connection"
+        }
+        return String(collapsed.prefix(48))
+    }
+
     private func endIdleSession(id: UUID) async throws {
         guard let entry = idleConnections.removeValue(forKey: id) else { return }
 
@@ -274,6 +364,14 @@ public actor IMAPServer {
         idleConnections.removeAll()
 
         for entry in idleEntries.values {
+            try? await entry.connection.done()
+            try? await entry.connection.disconnect()
+        }
+
+        let namedEntries = namedConnections
+        namedConnections.removeAll()
+
+        for entry in namedEntries.values {
             try? await entry.connection.done()
             try? await entry.connection.disconnect()
         }

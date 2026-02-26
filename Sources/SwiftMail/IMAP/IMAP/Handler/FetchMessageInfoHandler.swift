@@ -19,7 +19,8 @@ final class FetchMessageInfoHandler: BaseIMAPCommandHandler<[MessageInfo]>, IMAP
         super.handleTaggedOKResponse(response)
         
         // Succeed with the collected headers
-        succeedWithResult(lock.withLock { self.messageInfos })
+        let collectedInfos = lock.withLock { self.messageInfos }
+        succeedWithResult(collectedInfos)
     }
     
     /// Handle a tagged error response

@@ -30,7 +30,8 @@ final class FetchPartHandler: BaseIMAPCommandHandler<Data>, IMAPCommandHandler, 
 		super.handleTaggedOKResponse(response)
 		
 		// Succeed with the collected data
-		succeedWithResult(lock.withLock { self.partData })
+		let collectedPartData = lock.withLock { self.partData }
+		succeedWithResult(collectedPartData)
 	}
     
     /// Handle a tagged error response

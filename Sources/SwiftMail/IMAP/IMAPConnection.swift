@@ -430,9 +430,9 @@ final class IMAPConnection {
         if shouldUseInlineInitialResponse {
             initialResponse = InitialResponse(credentialBuffer)
         } else if supportsSASLIR {
-            // Some servers behave better when SASL-IR is explicitly present but empty ("="),
-            // then credentials are sent on the continuation challenge.
-            initialResponse = .empty
+            // Use true continuation mode for oversized payloads.
+            // Sending an explicit empty SASL-IR ("=") can be interpreted as an empty credential attempt.
+            initialResponse = nil
         } else {
             initialResponse = nil
         }

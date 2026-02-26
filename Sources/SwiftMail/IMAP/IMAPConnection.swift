@@ -457,8 +457,16 @@ final class IMAPConnection {
             await handleConnectionTerminationInResponses(handler.untaggedResponses)
             duplexLogger.flushInboundBuffer()
 
+<<<<<<< HEAD
             isSessionAuthenticated = true
-            try await refreshCapabilities(using: refreshedCapabilities)
+            if !refreshedCapabilities.isEmpty {
+                self.capabilities = Set(refreshedCapabilities)
+            } else {
+                // AUTHENTICATE often returns an OK without CAPABILITY data.
+                // Avoid issuing a follow-up CAPABILITY command here because we're already
+                // inside commandQueue.run, and a nested executeCommand would deadlock.
+                logger.debug("XOAUTH2 completed without capability data; retaining existing capability snapshot")
+            }
         } catch {
             scheduledTask.cancel()
             responseBuffer.hasActiveHandler = false

@@ -4,7 +4,6 @@
 import Foundation
 import Logging
 import NIO
-import NIOConcurrencyHelpers
 import NIOIMAP
 
 /// Base class for mail protocol loggers
@@ -20,7 +19,7 @@ class MailLogger: ChannelDuplexHandler, @unchecked Sendable {
     // Common properties - using protected-like access
 	let outboundLogger: Logging.Logger
 	let inboundLogger: Logging.Logger
-	let lock = NIOLock()
+	let lock = NSRecursiveLock()
     
     // Make inboundBuffer accessible for modification by subclasses
 	var inboundBuffer: [String] = []
@@ -95,4 +94,12 @@ class MailLogger: ChannelDuplexHandler, @unchecked Sendable {
 	func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         fatalError("channelRead(context:data:) must be implemented by subclasses")
     }
-} 
+}
+
+private extension NSRecursiveLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
+    }
+}

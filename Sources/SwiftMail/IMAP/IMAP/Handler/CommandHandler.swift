@@ -6,7 +6,6 @@ import Logging
 @preconcurrency import NIOIMAP
 import NIOIMAPCore
 import NIO
-import NIOConcurrencyHelpers
 
 /// Protocol for command-specific IMAP handlers
 /// These handlers are added to the pipeline when a command is sent and removed when the response is received
@@ -34,7 +33,7 @@ class BaseIMAPCommandHandler<ResultType: Sendable>: CommandHandler, RemovableCha
     private(set) var isCompleted: Bool = false
     
     	/// Lock for thread-safe access to mutable properties
-	let lock = NIOLock()
+	let lock = NSRecursiveLock()
 	
 	/// Logger for command operations
 	let logger = Logger(label: "com.swiftmail.imap.command")
@@ -198,4 +197,12 @@ class BaseIMAPCommandHandler<ResultType: Sendable>: CommandHandler, RemovableCha
         // Fail the promise with the error
         failWithError(error)
     }
-} 
+}
+
+private extension NSRecursiveLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
+    }
+}

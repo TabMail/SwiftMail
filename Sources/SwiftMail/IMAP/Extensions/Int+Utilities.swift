@@ -9,7 +9,7 @@ extension Int {
     /// - Parameter locale: The locale to use for formatting (defaults to current)
     /// - Returns: A human-readable string representation of the file size
 	public func formattedFileSize(locale: Locale = .current) -> String {
-        #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
+        #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
         // Use MeasurementFormatter on Apple platforms
         let byteCount = Measurement(value: Double(self), unit: UnitInformationStorage.bytes)
         let formatter = MeasurementFormatter()

@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "SwiftMail",
     platforms: [
-		.macOS("11.0"),
+		.macOS("12.0"),
 		.iOS("14.0"),
 		.tvOS("14.0"),
 		.watchOS("7.0"),
@@ -33,6 +33,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-testing", exact: "0.12.0"),
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
+        .package(url: "https://github.com/Cocoanetics/SwiftText.git", branch: "main"),
     ],
     targets: [
         .target(
@@ -43,6 +44,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "NIOIMAP", package: "swift-nio-imap"),
                 .product(name: "OrderedCollections", package: "swift-collections"),
+                .product(name: "SwiftTextHTML", package: "swifttext"),
             ]
         ),
         .executableTarget(

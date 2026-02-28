@@ -174,10 +174,15 @@ final class IMAPConnection {
         }
 
         if handler.isCompleted {
-            logger.debug("\(connectionContext) IDLE already completed, skipping DONE command")
+            logger.warning(
+                "\(connectionContext) IDLE already completed before DONE; forcing reconnect due to ambiguous IDLE completion state"
+            )
             idleHandler = nil
             responseBuffer.hasActiveHandler = false
-            return
+            try? await disconnectBody()
+            throw IMAPError.connectionFailed(
+                "Ambiguous IDLE completion detected before DONE; connection recycled to resynchronize IMAP state"
+            )
         }
 
         guard let channel = self.channel, channel.isActive else {

@@ -34,6 +34,9 @@ public struct MessageInfo: Codable, Sendable {
 
     /// The message ID
     public var messageId: String?
+
+    /// The message ID this message replied to (from ENVELOPE In-Reply-To)
+    public var inReplyTo: String?
     
     /// The flags of the message
     public var flags: [Flag]
@@ -55,6 +58,7 @@ public struct MessageInfo: Codable, Sendable {
         case date
         case internalDate
         case messageId
+        case inReplyTo
         case flags
         case parts
         case additionalFields
@@ -85,6 +89,7 @@ public struct MessageInfo: Codable, Sendable {
         date: Date? = nil,
         internalDate: Date? = nil,
         messageId: String? = nil,
+        inReplyTo: String? = nil,
         flags: [Flag] = [],
         parts: [MessagePart] = [],
         additionalFields: [String: String]? = nil
@@ -99,6 +104,7 @@ public struct MessageInfo: Codable, Sendable {
         self.date = date
         self.internalDate = internalDate
         self.messageId = messageId
+        self.inReplyTo = inReplyTo
         self.flags = flags
         self.parts = parts
         self.additionalFields = additionalFields
@@ -119,6 +125,7 @@ public extension MessageInfo {
         let date = try container.decodeIfPresent(Date.self, forKey: .date)
         let internalDate = try container.decodeIfPresent(Date.self, forKey: .internalDate)
         let messageId = try container.decodeIfPresent(String.self, forKey: .messageId)
+        let inReplyTo = try container.decodeIfPresent(String.self, forKey: .inReplyTo)
         let flags = try container.decodeIfPresent([Flag].self, forKey: .flags) ?? []
         let parts = try container.decodeIfPresent([MessagePart].self, forKey: .parts) ?? []
         let additionalFields = try container.decodeIfPresent([String: String].self, forKey: .additionalFields)
@@ -134,6 +141,7 @@ public extension MessageInfo {
             date: date,
             internalDate: internalDate,
             messageId: messageId,
+            inReplyTo: inReplyTo,
             flags: flags,
             parts: parts,
             additionalFields: additionalFields

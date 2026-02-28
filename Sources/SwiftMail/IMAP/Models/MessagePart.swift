@@ -76,40 +76,42 @@ public struct MessagePart: Sendable {
 			return "part_\(section.description.replacingOccurrences(of: ".", with: "_")).\(fileExtension)"
 		}
 	}
+
+	/// The charset declared in the Content-Type header (if present).
+	public var declaredCharset: String? {
+		let charsetPattern = "charset=([^\\s;\"']+)"
+		guard let range = contentType.range(of: charsetPattern, options: .regularExpression) else {
+			return nil
+		}
+
+		return String(contentType[range])
+			.replacingOccurrences(of: "charset=", with: "", options: .caseInsensitive)
+			.trimmingCharacters(in: .whitespacesAndNewlines)
+			.replacingOccurrences(of: "\"", with: "")
+			.replacingOccurrences(of: "'", with: "")
+	}
 	
 	/// The text content of the part
 	/// - Returns: The text content, or nil if can't be decoded
 	public var textContent: String? {
-		// Try to get decoded data using the MessagePart's decodedData method
-		if let decodedData = decodedData(),
-		   let text = String(data: decodedData, encoding: .utf8) {
+		guard let transferDecodedData = decodedData() else {
+			return nil
+		}
+
+		// Decode bytes exactly once, preferring the declared charset.
+		if let declaredCharset,
+		   let text = String(data: transferDecodedData, encoding: String.encodingFromCharset(declaredCharset)) {
 			return text
 		}
-		
-		// Fallback: try direct decoding if decodedData fails
-		guard let partData = data else { return nil }
-		
-		// First try to decode as base64 if the data looks like base64
-		if let base64String = String(data: partData, encoding: .utf8),
-		   let base64Data = Data(base64Encoded: base64String),
-		   let base64Text = String(data: base64Data, encoding: .utf8) {
-			
-			// If the part encoding is quoted-printable, decode the base64 result
-			if encoding?.lowercased() == "quoted-printable" {
-				return base64Text.decodeQuotedPrintable() ?? base64Text.decodeQuotedPrintableLossy()
-			} else {
-				return base64Text
+
+		// Fallbacks for malformed/unknown charset labels in real-world mail.
+		let fallbackEncodings: [String.Encoding] = [.utf8, .windowsCP1252, .isoLatin1, .ascii]
+		for fallback in fallbackEncodings {
+			if let text = String(data: transferDecodedData, encoding: fallback) {
+				return text
 			}
 		}
-		
-		// Try direct UTF-8 decoding
-		if let text = String(data: partData, encoding: .utf8) {
-			if encoding?.lowercased() == "quoted-printable" {
-				return text.decodeQuotedPrintable() ?? text.decodeQuotedPrintableLossy()
-			}
-			return text
-		}
-		
+
 		return nil
 	}
 	

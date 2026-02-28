@@ -31,18 +31,15 @@ struct ProblematicMessageTests {
         }
         let message = try JSONDecoder().decode(Message.self, from: jsonData)
         
-        // Test each part for undecoded quoted-printable characters
+        // Test each text part for undecoded quoted-printable characters
         for (index, part) in message.parts.enumerated() {
-            
-            // Get the decoded content
-            guard let partData = part.data else {
-                throw TestFailure("Part \(index + 1) has no data")
+            guard part.contentType.lowercased().hasPrefix("text/") else {
+                continue
             }
-            let decodedData = partData.decoded(for: part)
-            
-            // Convert to string for checking
-            guard let decodedString = String(data: decodedData, encoding: .utf8) else {
-                throw TestFailure("Could not convert decoded data to UTF-8 string for part \(index + 1)")
+
+            // Decode transfer encoding first, then apply charset once via MessagePart.textContent.
+            guard let decodedString = part.textContent else {
+                throw TestFailure("Could not decode text content for part \(index + 1)")
             }
             
             // Check for undecoded quoted-printable sequences

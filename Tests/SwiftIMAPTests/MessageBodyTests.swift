@@ -176,6 +176,43 @@ func testGetTextContentFromPart() throws {
 }
 
 @Test
+func testIso88591QuotedPrintableHtmlPreservesUmlautsForMarkdownConversion() throws {
+        // Body bytes are transfer-encoded quoted-printable text in ISO-8859-1.
+        // The ä/ö/ü bytes (E4/F6/FC) must survive transfer decoding before charset decoding.
+        let qpHTML = "<html><head><meta charset=\"iso-8859-1\"></head><body><p>Gr=FC=DFe aus K=F6ln: =E4=F6=FC</p></body></html>"
+        let htmlPart = MessagePart(
+            section: Section([1]),
+            contentType: "text/html; charset=iso-8859-1",
+            disposition: nil,
+            encoding: "quoted-printable",
+            filename: nil,
+            contentId: nil,
+            data: qpHTML.data(using: .ascii)
+        )
+
+        guard let transferDecoded = htmlPart.decodedData() else {
+            throw TestFailure("Expected transfer-decoded bytes")
+        }
+
+        // Ensure bytes are still ISO-8859-1 bytes (not UTF-8 re-encoded).
+        #expect(transferDecoded.contains(0xFC), "Expected ISO-8859-1 byte 0xFC (ü)")
+        #expect(!transferDecoded.contains(0xC3), "Unexpected UTF-8 lead byte 0xC3 found before charset decode")
+
+        guard let html = htmlPart.textContent else {
+            throw TestFailure("Expected textContent after charset decode")
+        }
+
+        #expect(html.contains("Grüße aus Köln: äöü"))
+
+        // Stand-in for html2md: conversion should receive correctly decoded String.
+        let markdown = html
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        #expect(markdown.contains("Grüße aus Köln: äöü"))
+}
+
+@Test
 func testDecodesMIMEEncodedAttachmentFilename() throws {
         let encodedName = "=?utf-8?Q?HC=5F1161254447.pdf?="
         var params = OrderedDictionary<String, String>()

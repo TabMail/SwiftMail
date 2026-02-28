@@ -180,19 +180,34 @@ struct QuotedPrintableTests {
     func edgeCasesAndMalformedInput() {
         // Test empty string
         #expect("".decodeQuotedPrintable() == "")
-        
+
         // Test string without encoding
         #expect("Plain text".decodeQuotedPrintable() == "Plain text")
-        
+
         // Test malformed encoding (incomplete hex) - should return nil for invalid input
         let malformed = "Hello=2World"  // Missing second hex digit
         let result = malformed.decodeQuotedPrintable()
         #expect(result == nil, "Should return nil for malformed input")
-        
+
         // Test with invalid hex characters - should return nil for invalid input
         let invalidHex = "Hello=ZZ"
         let invalidResult = invalidHex.decodeQuotedPrintable()
         #expect(invalidResult == nil, "Should return nil for invalid hex")
+
+        // Test = followed by only one character (previously crashed with String index out of bounds)
+        let equalsOneChar = "Hello=X"
+        #expect(equalsOneChar.decodeQuotedPrintable() == nil, "Should return nil for = with only one trailing char")
+        #expect(equalsOneChar.decodeQuotedPrintableLossy() == "Hello=X", "Lossy should preserve = with one trailing char")
+
+        // Test = as the very last character
+        let trailingEquals = "Hello="
+        #expect(trailingEquals.decodeQuotedPrintable() == nil, "Should return nil for trailing =")
+        #expect(trailingEquals.decodeQuotedPrintableLossy() == "Hello=", "Lossy should preserve trailing =")
+
+        // Test = at second-to-last position with valid first hex digit
+        let equalsOneHex = "Hello=A"
+        #expect(equalsOneHex.decodeQuotedPrintable() == nil, "Should return nil for = with only one hex digit")
+        #expect(equalsOneHex.decodeQuotedPrintableLossy() == "Hello=A", "Lossy should preserve incomplete hex")
     }
 
     @Test("Lossy decoding handles invalid sequences", .tags(.decoding))

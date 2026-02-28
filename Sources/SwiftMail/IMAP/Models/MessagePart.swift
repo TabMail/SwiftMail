@@ -96,7 +96,7 @@ public struct MessagePart: Sendable {
 			
 			// If the part encoding is quoted-printable, decode the base64 result
 			if encoding?.lowercased() == "quoted-printable" {
-				return base64Text.decodeQuotedPrintable()
+				return base64Text.decodeQuotedPrintable() ?? base64Text.decodeQuotedPrintableLossy()
 			} else {
 				return base64Text
 			}
@@ -104,11 +104,10 @@ public struct MessagePart: Sendable {
 		
 		// Try direct UTF-8 decoding
 		if let text = String(data: partData, encoding: .utf8) {
-			let decodedText = encoding?.lowercased() == "quoted-printable" ?
-				text.decodeQuotedPrintable() :
-				text
-
-			return decodedText
+			if encoding?.lowercased() == "quoted-printable" {
+				return text.decodeQuotedPrintable() ?? text.decodeQuotedPrintableLossy()
+			}
+			return text
 		}
 		
 		return nil

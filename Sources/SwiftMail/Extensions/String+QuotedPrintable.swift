@@ -56,8 +56,11 @@ extension String {
 
             if char == "=" {
                 let nextIndex = withoutSoftBreaks.index(after: index)
-                guard nextIndex < withoutSoftBreaks.endIndex,
-                      let nextNextIndex = withoutSoftBreaks.index(nextIndex, offsetBy: 1, limitedBy: withoutSoftBreaks.endIndex) else {
+                guard nextIndex < withoutSoftBreaks.endIndex else {
+                    return nil
+                }
+                let nextNextIndex = withoutSoftBreaks.index(after: nextIndex)
+                guard nextNextIndex < withoutSoftBreaks.endIndex else {
                     return nil
                 }
                 let hex = String(withoutSoftBreaks[nextIndex...nextNextIndex])

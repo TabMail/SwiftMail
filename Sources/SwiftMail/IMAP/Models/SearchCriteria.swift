@@ -131,11 +131,15 @@ public indirect enum SearchCriteria: Sendable {
     }
     
     /** Converts a Swift Date to an IMAP calendar day.
-     * - Parameter date: The date to convert.
+     * - Parameters:
+     *   - date: The date to convert.
+     *   - calendar: The calendar used to extract date components. Defaults to the Gregorian calendar
+     *     in the device's current timezone. Pass a UTC-configured calendar if you need deterministic
+     *     date-only values regardless of the device's locale (recommended for IMAP SINCE/BEFORE
+     *     queries whose date semantics are timezone-agnostic per RFC 3501).
      * - Returns: An IMAPCalendarDay representation of the date.
      */
-    private func dateToCalendarDay(_ date: Date) -> IMAPCalendarDay {
-        let calendar = Calendar(identifier: .gregorian)
+    private func dateToCalendarDay(_ date: Date, calendar: Calendar) -> IMAPCalendarDay {
         let components = calendar.dateComponents([.day, .month, .year], from: date)
         
         // Create with correct parameter order (year, month, day)
@@ -155,20 +159,22 @@ public indirect enum SearchCriteria: Sendable {
     }
 
     /** Converts the SwiftMail search criteria to the NIO IMAP search key format.
+     * - Parameter calendar: The calendar used for date-to-day conversions. Defaults to the Gregorian
+     *   calendar in the device's current timezone.
      * - Returns: The equivalent NIOIMAP.SearchKey for this search criteria.
      */
-    func toNIO() -> NIOIMAP.SearchKey {
+    func toNIO(calendar: Calendar = Calendar(identifier: .gregorian)) -> NIOIMAP.SearchKey {
         switch self {
         case .all:
             return .all
         case .and(let criterias):
-            return .and(criterias.map { $0.toNIO() } )
+            return .and(criterias.map { $0.toNIO(calendar: calendar) } )
         case .answered:
             return .answered
         case .bcc(let value):
             return .bcc(stringToBuffer(value))
         case .before(let date):
-            return .before(dateToCalendarDay(date))
+            return .before(dateToCalendarDay(date, calendar: calendar))
         case .body(let value):
             return .body(stringToBuffer(value))
         case .cc(let value):
@@ -192,25 +198,25 @@ public indirect enum SearchCriteria: Sendable {
         case .new:
             return .new
         case .not(let criteria):
-            return .not(criteria.toNIO())
+            return .not(criteria.toNIO(calendar: calendar))
         case .old:
             return .old
         case .on(let date):
-            return .on(dateToCalendarDay(date))
+            return .on(dateToCalendarDay(date, calendar: calendar))
         case .or(let criteria1, let criteria2):
-            return .or(criteria1.toNIO(), criteria2.toNIO())
+            return .or(criteria1.toNIO(calendar: calendar), criteria2.toNIO(calendar: calendar))
         case .recent:
             return .recent
         case .seen:
             return .seen
         case .sentBefore(let date):
-            return .sentBefore(dateToCalendarDay(date))
+            return .sentBefore(dateToCalendarDay(date, calendar: calendar))
         case .sentOn(let date):
-            return .sentOn(dateToCalendarDay(date))
+            return .sentOn(dateToCalendarDay(date, calendar: calendar))
         case .sentSince(let date):
-            return .sentSince(dateToCalendarDay(date))
+            return .sentSince(dateToCalendarDay(date, calendar: calendar))
         case .since(let date):
-            return .since(dateToCalendarDay(date))
+            return .since(dateToCalendarDay(date, calendar: calendar))
         case .smaller(let size):
             return .messageSizeSmaller(size)
         case .subject(let value):

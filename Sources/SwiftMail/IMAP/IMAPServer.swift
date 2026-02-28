@@ -868,8 +868,8 @@ public actor IMAPServer {
      - `IMAPError.connectionFailed` if not connected
      - Note: Logs search operations at debug level with criteria count and results count
      */
-    public func search<T: MessageIdentifier>(identifierSet: MessageIdentifierSet<T>? = nil, criteria: [SearchCriteria]) async throws -> MessageIdentifierSet<T> {
-        let command = SearchCommand(identifierSet: identifierSet, criteria: criteria)
+    public func search<T: MessageIdentifier>(identifierSet: MessageIdentifierSet<T>? = nil, criteria: [SearchCriteria], calendar: Calendar = Calendar(identifier: .gregorian)) async throws -> MessageIdentifierSet<T> {
+        let command = SearchCommand(identifierSet: identifierSet, criteria: criteria, calendar: calendar)
         return try await executeCommand(command)
     }
     

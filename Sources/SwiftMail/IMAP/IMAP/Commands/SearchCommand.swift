@@ -20,7 +20,9 @@ struct SearchCommand<T: MessageIdentifier>: IMAPTaggedCommand, Sendable {
     let identifierSet: MessageIdentifierSet<T>?
     /// Criteria that all messages must satisfy.
     let criteria: [SearchCriteria]
-    
+    /// Calendar used for date-to-day conversions in search criteria.
+    let calendar: Calendar
+
     /// Timeout in seconds for the search operation.
     var timeoutSeconds: Int { return 60 }
 
@@ -29,10 +31,12 @@ struct SearchCommand<T: MessageIdentifier>: IMAPTaggedCommand, Sendable {
      - Parameters:
        - identifierSet: Optional set limiting the messages to search.
        - criteria: The search criteria to apply.
+       - calendar: The calendar used for date-to-day conversions. Defaults to the Gregorian calendar.
      */
-    init(identifierSet: MessageIdentifierSet<T>? = nil, criteria: [SearchCriteria]) {
+    init(identifierSet: MessageIdentifierSet<T>? = nil, criteria: [SearchCriteria], calendar: Calendar = Calendar(identifier: .gregorian)) {
         self.identifierSet = identifierSet
         self.criteria = criteria
+        self.calendar = calendar
     }
 
     /// Validate that the command has at least one criterion.
@@ -48,7 +52,7 @@ struct SearchCommand<T: MessageIdentifier>: IMAPTaggedCommand, Sendable {
      - Returns: A ``TaggedCommand`` ready for sending.
      */
     func toTaggedCommand(tag: String) -> TaggedCommand {
-        let nioCriteria = criteria.map { $0.toNIO() }
+        let nioCriteria = criteria.map { $0.toNIO(calendar: calendar) }
 
         if T.self == UID.self {
             // For UID search, we need to use the key parameter

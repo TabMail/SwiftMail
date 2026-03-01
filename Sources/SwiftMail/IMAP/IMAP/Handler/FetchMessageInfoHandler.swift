@@ -170,7 +170,11 @@ final class FetchMessageInfoHandler: BaseIMAPCommandHandler<[MessageInfo]>, IMAP
             if let messageID = envelope.messageID {
                 header.messageId = String(messageID)
             }
-            
+
+            if let inReplyTo = envelope.inReplyTo {
+                header.inReplyTo = String(inReplyTo)
+            }
+
         case .uid(let uid):
 				header.uid = UID(nio: uid)
 

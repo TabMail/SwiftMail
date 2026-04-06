@@ -201,7 +201,7 @@ final class IMAPConnection {
             .channelInitializer { channel in
                 do {
                     let parserOptions = ResponseParser.Options(
-                        bufferLimit: 1024 * 1024,
+                        bufferLimit: 4 * 1024 * 1024,
                         messageAttributeLimit: .max,
                         bodySizeLimit: .max,
                         literalSizeLimit: IMAPDefaults.literalSizeLimit
@@ -238,7 +238,7 @@ final class IMAPConnection {
         self.isSessionAuthenticated = false
         self.namespaces = nil
 
-        logger.info("\(connectionContext) Connected to IMAP server with 1MB buffer limit for large responses")
+        logger.info("\(connectionContext) Connected to IMAP server with 4MB buffer limit for large responses")
 
         // Wait for the greeting with timeout
         let timeoutTask = group.next().scheduleTask(in: .seconds(5)) {

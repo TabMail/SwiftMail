@@ -61,6 +61,15 @@ public actor IMAPNamedConnection {
         capabilities.contains(.uidPlus)
     }
 
+    /// Whether the server advertised MOVE (RFC 6851) for this connection.
+    ///
+    /// This reports the advertised capability only. ``move(messages:to:)`` issues a real `MOVE`
+    /// for a UID-based set only when the server also advertises UIDPLUS, and otherwise falls back
+    /// to COPY + STORE `\Deleted` + EXPUNGE.
+    public var supportsMove: Bool {
+        capabilities.contains(.move)
+    }
+
     // MARK: - Internal Helpers
 
     /// Capabilities snapshot reused by the split extensions when deciding

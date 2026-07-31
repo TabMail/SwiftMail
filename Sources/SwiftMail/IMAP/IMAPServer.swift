@@ -90,6 +90,15 @@ public actor IMAPServer {
         capabilities.contains(.uidPlus)
     }
 
+    /// Whether the primary connection advertised MOVE (RFC 6851).
+    ///
+    /// This reports the advertised capability only. ``move(messages:to:)`` issues a real `MOVE`
+    /// for a UID-based set only when the server also advertises UIDPLUS, and otherwise falls back
+    /// to COPY + STORE `\Deleted` + EXPUNGE.
+    public var supportsMove: Bool {
+        capabilities.contains(.move)
+    }
+
     var certificatePolicyForTesting: MailCertificateVerificationPolicy {
         primaryConnection.certificateVerificationPolicyForTesting
     }

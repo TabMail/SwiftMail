@@ -85,13 +85,12 @@ struct CopyUIDTests {
     // MARK: - CopyHandler — cardinality mismatch
 
     @Test
-    func testCardinalityMismatchThrows() async throws {
+    func testCardinalityMismatchOnTaggedOKReturnsNil() async throws {
         // Source has 2 UIDs, destination has 1 — malformed.
-        await #expect(throws: (any Error).self) {
-            try await executeCopy(
-                responses: ["A001 OK [COPYUID 1 1:2 200] COPY completed\r\n"]
-            )
-        }
+        let result = try await executeCopy(
+            responses: ["A001 OK [COPYUID 1 1:2 200] COPY completed\r\n"]
+        )
+        #expect(result == nil)
     }
 
     // MARK: - MoveHandler — COPYUID present
@@ -116,6 +115,44 @@ struct CopyUIDTests {
             responses: ["A001 OK MOVE completed\r\n"]
         )
         #expect(result == nil)
+    }
+
+    @Test
+    func testMoveCardinalityMismatchOnTaggedOKReturnsNil() async throws {
+        let result = try await executeMove(
+            responses: ["A001 OK [COPYUID 1 1:2 200] MOVE completed\r\n"]
+        )
+        #expect(result == nil)
+    }
+
+    @Test
+    func testMoveTaggedNOThrowsMoveFailed() async {
+        do {
+            _ = try await executeMove(responses: ["A001 NO MOVE denied\r\n"])
+            Issue.record("Expected tagged NO to throw moveFailed")
+        } catch let error as IMAPError {
+            guard case .moveFailed = error else {
+                Issue.record("Expected moveFailed, got \(error)")
+                return
+            }
+        } catch {
+            Issue.record("Expected IMAPError.moveFailed, got \(error)")
+        }
+    }
+
+    @Test
+    func testCopyTaggedNOThrowsCopyFailed() async {
+        do {
+            _ = try await executeCopy(responses: ["A001 NO COPY denied\r\n"])
+            Issue.record("Expected tagged NO to throw copyFailed")
+        } catch let error as IMAPError {
+            guard case .copyFailed = error else {
+                Issue.record("Expected copyFailed, got \(error)")
+                return
+            }
+        } catch {
+            Issue.record("Expected IMAPError.copyFailed, got \(error)")
+        }
     }
 
     // MARK: - CopyUID model — maximum uidValidity

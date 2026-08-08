@@ -58,7 +58,11 @@ final class CopyHandler: BaseIMAPCommandHandler<CopyUID?>, IMAPCommandHandler, @
         do {
             succeedWithResult(try extractCopyUID(from: response))
         } catch {
-            failWithError(error)
+            // COPY itself succeeded; only its optional destination mapping was
+            // malformed. Returning nil prevents a durable caller from copying
+            // the same messages again while keeping tagged NO/BAD failures on
+            // the typed error path below.
+            succeedWithResult(nil)
         }
     }
 

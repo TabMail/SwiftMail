@@ -44,9 +44,11 @@ final class IMAPTestServer {
     private var acceptSource: DispatchSourceRead?
     private let queue = DispatchQueue(label: "IMAPTestServer")
     private let messages: [Message]
+    private let advertisedCapabilities: [String]
     private let loginResponseDelay: TimeInterval
     private let metricsQueue = DispatchQueue(label: "IMAPTestServer.metrics")
     private var idleCommandCountStorage = 0
+    private var commandLogStorage: [String] = []
     private var clientFds: Set<Int32> = []
     private let clientFdsLock = NSLock()
     private let clientGroup = DispatchGroup()
@@ -58,6 +60,9 @@ final class IMAPTestServer {
         username: String = "testuser",
         password: String = "testpass",
         loginResponseDelay: TimeInterval = 0,
+        advertisedCapabilities: [String] = [
+            "IMAP4rev1", "AUTH=PLAIN", "LITERAL+", "ID", "NAMESPACE", "UIDPLUS", "IDLE"
+        ],
         maildirURL: URL
     ) throws {
         self.host = host
@@ -65,11 +70,16 @@ final class IMAPTestServer {
         self.username = username
         self.password = password
         self.loginResponseDelay = loginResponseDelay
+        self.advertisedCapabilities = advertisedCapabilities
         self.messages = try Self.loadMaildir(maildirURL)
     }
 
     var idleCommandCount: Int {
         metricsQueue.sync { idleCommandCountStorage }
+    }
+
+    var commandLog: [String] {
+        metricsQueue.sync { commandLogStorage }
     }
 
     private func recordIdleCommand() {
@@ -86,6 +96,10 @@ final class IMAPTestServer {
 
     private func recordIDCommand() {
         metricsQueue.sync { idCommandCountStorage += 1 }
+    }
+
+    private func recordCommand(_ line: String) {
+        metricsQueue.sync { commandLogStorage.append(line) }
     }
 
     /// Total connections ever accepted. Catches re-dials that never reach an
@@ -301,6 +315,7 @@ final class IMAPTestServer {
                 let tag = parts[0]
                 let command = parts[1].uppercased()
                 let args = parts.count > 2 ? parts[2] : ""
+                recordCommand(line)
 
                 if command == "IDLE" {
                     recordIdleCommand()
@@ -392,7 +407,7 @@ final class IMAPTestServer {
     ) -> String {
         switch command {
             case "CAPABILITY":
-                return "* CAPABILITY IMAP4rev1 AUTH=PLAIN LITERAL+ ID NAMESPACE UIDPLUS IDLE\r\n"
+                return "* CAPABILITY \(advertisedCapabilities.joined(separator: " "))\r\n"
                     + "\(tag) OK CAPABILITY completed\r\n"
             case "LOGIN":
                 if loginResponseDelay > 0 {
@@ -447,6 +462,16 @@ final class IMAPTestServer {
             case "SEARCH":
                 let uids = messages.map { String($0.uid) }.joined(separator: " ")
                 return "* SEARCH \(uids)\r\n\(tag) OK UID SEARCH completed\r\n"
+            case "MOVE":
+                guard advertisedCapabilities.contains("MOVE") else {
+                    return "\(tag) BAD UID MOVE not supported\r\n"
+                }
+                let moveParts = subargs.split(separator: " ", maxSplits: 1).map(String.init)
+                guard moveParts.count == 2 else { return "\(tag) BAD Invalid UID MOVE\r\n" }
+                if advertisedCapabilities.contains("UIDPLUS") {
+                    return "\(tag) OK [COPYUID 2 \(moveParts[0]) 101] UID MOVE completed\r\n"
+                }
+                return "\(tag) OK UID MOVE completed\r\n"
             default:
                 return "\(tag) BAD Unknown UID subcommand\r\n"
         }

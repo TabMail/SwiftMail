@@ -20,12 +20,16 @@ final class MoveHandler: BaseIMAPCommandHandler<CopyUID?>, IMAPCommandHandler, @
         do {
             succeedWithResult(try extractCopyUID(from: response))
         } catch {
-            failWithError(error)
+            // The tagged OK is authority that MOVE completed. A malformed
+            // optional COPYUID makes only the address mapping unusable; turning
+            // it into command failure would make a durable caller retry an
+            // already-committed move.
+            succeedWithResult(nil)
         }
     }
 
     override func handleTaggedErrorResponse(_ response: TaggedResponse) {
-        failWithError(IMAPError.commandFailed("Move failed: \(String(describing: response.state))"))
+        failWithError(IMAPError.moveFailed(String(describing: response.state)))
     }
 }
 

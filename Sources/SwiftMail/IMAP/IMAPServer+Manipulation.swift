@@ -6,6 +6,28 @@ import NIOIMAPCore
 
 extension IMAPServer {
     /**
+     Moves UIDs with the server's atomic MOVE extension and never falls back.
+
+     Unlike ``move(messages:to:)``, this entry point either emits one `UID MOVE`
+     or throws before issuing a manipulation command. UIDPLUS is deliberately
+     not required: RFC 6851 defines `UID MOVE` under the MOVE capability and
+     makes `COPYUID` evidence an optional UIDPLUS interaction.
+
+     - Throws: ``IMAPError/commandNotSupported(_:)`` when MOVE is not currently
+       advertised, before any COPY, STORE, MOVE, or EXPUNGE command is emitted.
+     */
+    @discardableResult
+    public func moveAtomically(
+        messages identifierSet: UIDSet,
+        to destinationMailbox: String
+    ) async throws -> CopyUID? {
+        guard capabilities.contains(.move) else {
+            throw IMAPError.commandNotSupported("MOVE command not supported by server")
+        }
+        return try await executeMove(messages: identifierSet, to: destinationMailbox)
+    }
+
+    /**
      Moves messages to another mailbox.
 
      This method attempts to use the MOVE extension if available, falling back to

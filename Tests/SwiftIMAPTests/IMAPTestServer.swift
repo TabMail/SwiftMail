@@ -61,7 +61,7 @@ final class IMAPTestServer {
         password: String = "testpass",
         loginResponseDelay: TimeInterval = 0,
         advertisedCapabilities: [String] = [
-            "IMAP4rev1", "AUTH=PLAIN", "LITERAL+", "ID", "NAMESPACE", "UIDPLUS", "IDLE",
+            "IMAP4rev1", "AUTH=PLAIN", "LITERAL+", "ID", "NAMESPACE", "UIDPLUS", "IDLE"
         ],
         maildirURL: URL
     ) throws {

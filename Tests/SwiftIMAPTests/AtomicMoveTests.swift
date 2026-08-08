@@ -8,8 +8,7 @@ import Testing
     struct AtomicMoveTests {
         @Test("MOVE with UIDPLUS emits one UID MOVE and returns COPYUID")
         func moveWithUIDPlus() async throws {
-            try await withServer(capabilities: ["IMAP4rev1", "AUTH=PLAIN", "MOVE", "UIDPLUS"]) {
-                server, testServer in
+            try await withServer(capabilities: ["IMAP4rev1", "AUTH=PLAIN", "MOVE", "UIDPLUS"]) { server, testServer in
                 let result = try await server.moveAtomically(
                     messages: UIDSet(UID(1)), to: "Archive")
                 let copyUID = try #require(result)
@@ -22,8 +21,7 @@ import Testing
 
         @Test("MOVE without UIDPLUS still emits UID MOVE and returns no mapping")
         func moveWithoutUIDPlus() async throws {
-            try await withServer(capabilities: ["IMAP4rev1", "AUTH=PLAIN", "MOVE"]) {
-                server, testServer in
+            try await withServer(capabilities: ["IMAP4rev1", "AUTH=PLAIN", "MOVE"]) { server, testServer in
                 let result = try await server.moveAtomically(
                     messages: UIDSet(UID(1)), to: "Archive")
                 #expect(result == nil)

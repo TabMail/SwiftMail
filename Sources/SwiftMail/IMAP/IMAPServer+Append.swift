@@ -39,8 +39,10 @@ extension IMAPServer {
     /**
      Append a fully composed email to a mailbox.
 
-     This helper builds the MIME body using ``Email/constructContent(use8BitMIME:)``
-     and streams it to the server using the IMAP `APPEND` command.
+     This helper builds the MIME body using ``Email/constructContent(use8BitMIME:includeBccHeader:)``
+     and streams it to the server using the IMAP `APPEND` command. An appended
+     message is a copy the sender keeps (a draft, a Sent copy), so it names its
+     BCC recipients in a `Bcc` header; otherwise a draft would lose them.
 
      - Parameters:
         - email: The email to append.
@@ -60,7 +62,7 @@ extension IMAPServer {
             throw IMAPError.invalidArgument("Mailbox name must not be empty")
         }
 
-        var content = canonicalizeCRLF(email.constructContent(use8BitMIME: true))
+        var content = canonicalizeCRLF(email.constructContent(use8BitMIME: true, includeBccHeader: true))
         if !content.hasSuffix("\r\n") {
             content.append("\r\n")
         }

@@ -10,8 +10,8 @@ extension IMAPServer {
     /// This method orchestrates the full send-draft workflow:
     /// 1. Resolves the drafts and sent mailboxes via special-use attributes (or throws if not found).
     /// 2. Selects the draft mailbox and fetches the raw message + envelope info.
-    /// 3. Sends the raw message via the provided ``SMTPServer``.
-    /// 4. Appends the message to the Sent folder with the `\Seen` flag and current date.
+    /// 3. Sends the raw message via the provided ``SMTPServer``, without its `Bcc` header.
+    /// 4. Appends the message, `Bcc` header included, to the Sent folder with the `\Seen` flag and current date.
     /// 5. Marks the draft as `\Deleted` and expunges it (UID EXPUNGE when available).
     ///
     /// - Parameters:
@@ -45,8 +45,10 @@ extension IMAPServer {
         // 4. Extract sender and recipients from the envelope
         let (sender, recipients) = try Self.sendDraftAddresses(from: messageInfo)
 
-        // 5. Send via SMTP
-        try await smtp.sendRawMessage(rawMessageData, from: sender, to: recipients)
+        // 5. Send via SMTP. BCC recipients are envelope recipients only: the
+        // draft names them in a Bcc header, which must not reach the people
+        // the message is delivered to (RFC 5322 section 3.6.3).
+        try await smtp.sendRawMessage(Self.removingBccFields(from: rawMessageData), from: sender, to: recipients)
 
         // 6. Append to Sent folder with \Seen flag.
         let appendResult = try await appendDraftToSent(rawMessageData: rawMessageData, mailbox: resolvedSentMailbox)
@@ -90,6 +92,49 @@ extension IMAPServer {
         }
 
         return (sender, recipients)
+    }
+
+    /// The message with every `Bcc` field removed from its header section,
+    /// folded continuation lines included. The body and every other byte are
+    /// kept as they are, so a message in any charset survives unchanged.
+    static func removingBccFields(from message: Data) -> Data {
+        let bytes = [UInt8](message)
+        let lineFeed: UInt8 = 0x0A
+        let carriageReturn: UInt8 = 0x0D
+        var output = [UInt8]()
+        output.reserveCapacity(bytes.count)
+        var dropping = false
+        var lineStart = 0
+        while lineStart < bytes.count {
+            let lineEnd = bytes[lineStart...].firstIndex(of: lineFeed).map { $0 + 1 } ?? bytes.count
+            let line = bytes[lineStart..<lineEnd]
+            let content = line.prefix { $0 != carriageReturn && $0 != lineFeed }
+            if content.isEmpty {
+                // The blank line ends the header section; the rest is the body.
+                output.append(contentsOf: bytes[lineStart...])
+                break
+            }
+            if let first = content.first, first == 0x20 || first == 0x09 {
+                // A folded continuation belongs to the field above it.
+            } else {
+                dropping = Self.isBccField(content)
+            }
+            if !dropping {
+                output.append(contentsOf: line)
+            }
+            lineStart = lineEnd
+        }
+        return Data(output)
+    }
+
+    private static func isBccField(_ line: ArraySlice<UInt8>) -> Bool {
+        guard let colon = line.firstIndex(of: UInt8(ascii: ":")) else { return false }
+        var name = line[line.startIndex..<colon]
+        while let last = name.last, last == 0x20 || last == 0x09 {
+            name = name.dropLast()
+        }
+        // ASCII case folding: `| 0x20` maps only `B`/`b` to `b` and `C`/`c` to `c`.
+        return name.map { $0 | 0x20 } == Array("bcc".utf8)
     }
 
     /// Append the raw draft message to the Sent mailbox with the `\Seen` flag.

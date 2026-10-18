@@ -303,7 +303,9 @@ struct BccHeaderTests {
             // The draft is retired only after its Sent copy is stored.
             let commands = testServer.commandLog.map { $0.uppercased() }
             let append = commands.firstIndex { $0.contains(" APPEND ") }
-            let store = commands.firstIndex { $0.contains(" STORE ") && $0.contains("\\DELETED") }
+            let store = commands.firstIndex {
+                $0.contains(" STORE ") && $0.contains("+FLAGS") && $0.contains("\\DELETED")
+            }
             let expunge = commands.firstIndex { $0.contains("EXPUNGE") }
             #expect(append != nil && store != nil && expunge != nil)
             if let append, let store, let expunge {

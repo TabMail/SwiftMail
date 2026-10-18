@@ -102,9 +102,11 @@ extension IMAPServer {
     /// kept as they are, so a message in any charset survives unchanged.
     ///
     /// - Throws: ``IMAPError/invalidArgument(_:)`` when the header section
-    ///   holds a carriage return that is not followed by a line feed. Readers
+    ///   holds a carriage return that is not followed by a line feed (readers
     ///   disagree on where such a line ends, so a `Bcc` field could hide behind
-    ///   it; the draft is not sent and stays as it is.
+    ///   it), or a `Resent-Bcc` field (`sendDraft` does not send resent
+    ///   messages, and every recipient would see it). The draft is not sent and
+    ///   stays as it is.
     static func removingBccFields(from message: Data) throws -> Data {
         let bytes = [UInt8](message)
         let lineFeed: UInt8 = 0x0A
@@ -133,7 +135,11 @@ extension IMAPServer {
             if let first = content.first, first == 0x20 || first == 0x09 {
                 // A folded continuation belongs to the field above it.
             } else {
-                dropping = Self.isBccField(content)
+                let name = Self.fieldName(content)
+                if name == Array("resent-bcc".utf8) {
+                    throw IMAPError.invalidArgument("Draft has a Resent-Bcc field")
+                }
+                dropping = name == Array("bcc".utf8)
             }
             if !dropping {
                 output.append(contentsOf: line)
@@ -143,14 +149,15 @@ extension IMAPServer {
         return Data(output)
     }
 
-    private static func isBccField(_ line: ArraySlice<UInt8>) -> Bool {
-        guard let colon = line.firstIndex(of: UInt8(ascii: ":")) else { return false }
+    /// The field name of a header line, ASCII-lowercased, with any whitespace
+    /// before the colon removed; nil for a line with no colon.
+    private static func fieldName(_ line: ArraySlice<UInt8>) -> [UInt8]? {
+        guard let colon = line.firstIndex(of: UInt8(ascii: ":")) else { return nil }
         var name = line[line.startIndex..<colon]
         while let last = name.last, last == 0x20 || last == 0x09 {
             name = name.dropLast()
         }
-        // ASCII case folding: `| 0x20` maps only `B`/`b` to `b` and `C`/`c` to `c`.
-        return name.map { $0 | 0x20 } == Array("bcc".utf8)
+        return name.map { (0x41...0x5A).contains($0) ? $0 + 0x20 : $0 }
     }
 
     /// Append the raw draft message to the Sent mailbox with the `\Seen` flag.

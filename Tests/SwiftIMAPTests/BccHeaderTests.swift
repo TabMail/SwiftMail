@@ -80,6 +80,13 @@ struct BccHeaderTests {
         #expect(Self.strip(raw) == raw)
     }
 
+    @Test("keeps a line with no colon, and a header section with no blank line after it")
+    func keepsMalformedLines() {
+        #expect(Self.strip("To: you@example.com\r\nbcc\r\nSubject: Hi\r\n\r\nBody")
+            == "To: you@example.com\r\nbcc\r\nSubject: Hi\r\n\r\nBody")
+        #expect(Self.strip("To: you@example.com\r\nBcc: a@example.com") == "To: you@example.com\r\n")
+    }
+
     @Test("handles bare LF line endings")
     func handlesBareLF() {
         let raw = "From: me@example.com\nBcc: one@example.com,\n two@example.com\nTo: you@example.com\n\nBody\n"
@@ -109,7 +116,7 @@ struct BccHeaderTests {
 }
 
 #if os(macOS)
-    @Suite("Bcc header on APPEND", .serialized, .timeLimit(.minutes(1)))
+    @Suite("Bcc header over IMAP and SMTP", .serialized, .timeLimit(.minutes(1)))
     struct BccAppendTests {
         @Test("a draft created over IMAP names its BCC recipients")
         func createDraftWritesBcc() async throws {
@@ -128,7 +135,43 @@ struct BccHeaderTests {
             #expect(header.components(separatedBy: "\r\n").contains("Bcc: Hidden <hidden@example.com>"))
         }
 
+        /// Sending a draft that names BCC recipients delivers to them, sends no
+        /// one a copy that names them, and files a Sent copy that does.
+        @Test("sendDraft delivers to BCC recipients without naming them, and the Sent copy names them")
+        func sendDraftKeepsBccOutOfTheDeliveredCopy() async throws {
+            let draft = [
+                "From: sender@example.com",
+                "To: to@example.com",
+                "Bcc: Hidden <hidden@example.com>",
+                "Subject: Draft with Bcc",
+                "Message-ID: <draft-bcc@example.com>",
+                "",
+                "Draft body.",
+                ""
+            ].joined(separator: "\r\n")
+            let smtp = SMTPCaptureServer()
+            try await smtp.start()
+            let appended = try await Self.appendedMessage(seeding: draft) { server in
+                let client = SMTPServer(host: "127.0.0.1", port: smtp.port, transportSecurity: .plainText)
+                try await client.connect()
+                _ = try await server.sendDraft(uid: UID(1), via: client, from: "Drafts", to: "Sent")
+                try await client.disconnect()
+            }
+            try await smtp.stop()
+
+            #expect(smtp.recipients.sorted() == ["hidden@example.com", "to@example.com"])
+            let delivered = String(bytes: smtp.content, encoding: .utf8) ?? ""
+            #expect(delivered.contains("Draft body."))
+            #expect(!delivered.contains("hidden@example.com"))
+            let sentCopy = (String(bytes: appended, encoding: .utf8) ?? "")
+                .components(separatedBy: "\r\n\r\n").first ?? ""
+            #expect(sentCopy.components(separatedBy: "\r\n").contains("Bcc: Hidden <hidden@example.com>"))
+        }
+
+        /// Runs `body` against an IMAP test server whose one mailbox holds
+        /// `seeding` (when given), and returns the one message it APPENDed.
         private static func appendedMessage(
+            seeding message: String? = nil,
             _ body: (IMAPServer) async throws -> Void
         ) async throws -> Data {
             let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -138,6 +181,9 @@ struct BccHeaderTests {
             try FileManager.default.createDirectory(
                 at: maildir.appendingPathComponent("new"), withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: tempRoot) }
+            if let message {
+                try Data(message.utf8).write(to: maildir.appendingPathComponent("cur/1.eml"))
+            }
 
             let testServer = try IMAPTestServer(maildirURL: maildir)
             try testServer.start()

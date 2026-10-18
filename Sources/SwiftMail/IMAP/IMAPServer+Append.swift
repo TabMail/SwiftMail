@@ -42,7 +42,10 @@ extension IMAPServer {
      This helper builds the MIME body using ``Email/constructContent(use8BitMIME:includeBccHeader:)``
      and streams it to the server using the IMAP `APPEND` command. An appended
      message is a copy the sender keeps (a draft, a Sent copy), so it names its
-     BCC recipients in a `Bcc` header; otherwise a draft would lose them.
+     BCC recipients in a `Bcc` header; otherwise a draft would lose them. For
+     a mailbox other people read (a shared folder), append the content of
+     ``Email/constructContent(use8BitMIME:includeBccHeader:)`` without the
+     header through ``append(rawMessage:to:flags:internalDate:)`` instead.
 
      - Parameters:
         - email: The email to append.

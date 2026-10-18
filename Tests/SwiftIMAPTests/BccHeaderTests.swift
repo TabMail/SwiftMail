@@ -55,50 +55,69 @@ struct BccHeaderTests {
 
     // MARK: - removingBccFields (sendDraft's SMTP copy)
 
-    private static func strip(_ text: String) -> String {
-        String(bytes: IMAPServer.removingBccFields(from: Data(text.utf8)), encoding: .utf8) ?? ""
+    private static func strip(_ text: String) throws -> String {
+        String(bytes: try IMAPServer.removingBccFields(from: Data(text.utf8)), encoding: .utf8) ?? ""
     }
 
     @Test("removes a Bcc field and its folded continuation lines, any case")
-    func removesFoldedBcc() {
+    func removesFoldedBcc() throws {
         let raw = "From: me@example.com\r\nBCC: one@example.com,\r\n two@example.com,\r\n\tthree@example.com\r\n"
             + "To: you@example.com\r\nSubject: Hi\r\n\r\nBody\r\n"
-        #expect(Self.strip(raw) == "From: me@example.com\r\nTo: you@example.com\r\nSubject: Hi\r\n\r\nBody\r\n")
+        #expect(try Self.strip(raw) == "From: me@example.com\r\nTo: you@example.com\r\nSubject: Hi\r\n\r\nBody\r\n")
     }
 
-    @Test("removes every Bcc field, including one written with a space before the colon")
-    func removesEveryBcc() {
-        let raw = "Bcc: a@example.com\r\nTo: you@example.com\r\nbcc : b@example.com\r\n\r\nBody\r\n"
-        #expect(Self.strip(raw) == "To: you@example.com\r\n\r\nBody\r\n")
+    @Test("removes every Bcc field, whatever whitespace comes before the colon",
+          arguments: ["", " ", "\t", "  ", " \t "])
+    func removesEveryBcc(whitespace: String) throws {
+        let raw = "Bcc: a@example.com\r\nTo: you@example.com\r\nbcc\(whitespace): b@example.com\r\n\r\nBody\r\n"
+        #expect(try Self.strip(raw) == "To: you@example.com\r\n\r\nBody\r\n")
     }
 
     @Test("keeps the body, even a body line that looks like a Bcc field")
-    func keepsBody() {
+    func keepsBody() throws {
         let raw = "To: you@example.com\r\n\r\nBcc: not-a-header@example.com\r\n"
-        #expect(Self.strip(raw) == raw)
+        #expect(try Self.strip(raw) == raw)
     }
 
     @Test("keeps fields whose name only starts or ends with Bcc")
-    func keepsSimilarNames() {
+    func keepsSimilarNames() throws {
         let raw = "X-Bcc: a@example.com\r\nBcc-Note: b\r\nResent-Bcc: c@example.com\r\n\r\nBody\r\n"
-        #expect(Self.strip(raw) == raw)
+        #expect(try Self.strip(raw) == raw)
     }
 
     @Test("keeps a line with no colon, and a header section with no blank line after it")
-    func keepsMalformedLines() {
-        #expect(Self.strip("To: you@example.com\r\nbcc\r\nSubject: Hi\r\n\r\nBody")
+    func keepsMalformedLines() throws {
+        #expect(try Self.strip("To: you@example.com\r\nbcc\r\nSubject: Hi\r\n\r\nBody")
             == "To: you@example.com\r\nbcc\r\nSubject: Hi\r\n\r\nBody")
-        #expect(Self.strip("To: you@example.com\r\nBcc: a@example.com") == "To: you@example.com\r\n")
+        #expect(try Self.strip("To: you@example.com\r\nBcc: a@example.com") == "To: you@example.com\r\n")
+    }
+
+    /// Readers disagree on where a line with a lone carriage return ends, so a
+    /// Bcc field could hide behind one. Such a header is refused, not guessed at.
+    @Test("refuses a header with a carriage return that no line feed follows", arguments: [
+        "To: you@example.com\r\n\rX-Note: odd\r\nBcc: a@example.com\r\n\r\nBody\r\n",
+        "To: you@example.com\rBcc: a@example.com\r\n\r\nBody\r\n",
+        "To: you@example.com\r\r\nBcc: a@example.com\r\n\r\nBody\r\n",
+        "To: you@example.com\nBcc: a@example.com\r"
+    ])
+    func refusesBareCRInHeader(raw: String) {
+        #expect(throws: IMAPError.self) { try Self.strip(raw) }
+    }
+
+    @Test("keeps a lone carriage return in the body")
+    func keepsBareCRInBody() throws {
+        #expect(try Self.strip("To: you@example.com\r\nBcc: a@example.com\r\n\r\nBody\rmore\r\n")
+            == "To: you@example.com\r\n\r\nBody\rmore\r\n")
     }
 
     @Test("handles bare LF line endings")
-    func handlesBareLF() {
+    func handlesBareLF() throws {
         let raw = "From: me@example.com\nBcc: one@example.com,\n two@example.com\nTo: you@example.com\n\nBody\n"
-        #expect(Self.strip(raw) == "From: me@example.com\nTo: you@example.com\n\nBody\n")
+        #expect(try Self.strip(raw) == "From: me@example.com\nTo: you@example.com\n\nBody\n")
     }
 
     @Test("keeps bytes that are not UTF-8 unchanged")
-    func keepsNonUTF8Bytes() {
+    func keepsNonUTF8Bytes() throws {
         var raw = Data("Subject: caf".utf8)
         raw.append(0xE9)  // Latin-1 e-acute
         raw.append(contentsOf: Data("\r\nBcc: a@example.com\r\n\r\n".utf8))
@@ -107,15 +126,15 @@ struct BccHeaderTests {
         expected.append(0xE9)
         expected.append(contentsOf: Data("\r\n\r\n".utf8))
         expected.append(0xFF)
-        #expect(IMAPServer.removingBccFields(from: raw) == expected)
+        #expect(try IMAPServer.removingBccFields(from: raw) == expected)
     }
 
     @Test("a kept copy loses exactly its Bcc header and nothing else")
-    func keptCopyRoundTrip() {
+    func keptCopyRoundTrip() throws {
         let kept = Self.email.constructContent(includeBccHeader: true)
         let bccLine = kept.components(separatedBy: "\r\n").first { $0.hasPrefix("Bcc: ") } ?? ""
         #expect(!bccLine.isEmpty)
-        #expect(Self.strip(kept) == kept.replacingOccurrences(of: bccLine + "\r\n", with: ""))
+        #expect(try Self.strip(kept) == kept.replacingOccurrences(of: bccLine + "\r\n", with: ""))
     }
 }
 
@@ -190,12 +209,50 @@ struct BccHeaderTests {
             #expect(sentCopy.components(separatedBy: "\r\n").contains("Bcc: Hidden <hidden@example.com>"))
         }
 
+        /// A draft whose header holds a lone carriage return is refused before
+        /// anything reaches SMTP, and stays in the Drafts folder as it was.
+        @Test("sendDraft refuses a draft whose header holds a lone carriage return")
+        func sendDraftRefusesBareCRHeader() async throws {
+            let draft = "From: sender@example.com\r\nTo: to@example.com\r\n\rX-Note: odd\r\n"
+                + "Bcc: hidden@example.com\r\nSubject: Draft\r\nMessage-ID: <draft-cr@example.com>\r\n"
+                + "\r\nDraft body.\r\n"
+            let smtp = SMTPCaptureServer()
+            try await smtp.start()
+            let testServer = try await Self.runTestServer(seeding: draft) { server in
+                let client = SMTPServer(host: "127.0.0.1", port: smtp.port, transportSecurity: .plainText)
+                try await client.connect()
+                await #expect(throws: IMAPError.self) {
+                    try await server.sendDraft(uid: UID(1), via: client, from: "Drafts", to: "Sent")
+                }
+                try await client.disconnect()
+            }
+            try await smtp.stop()
+
+            #expect(smtp.recipients.isEmpty)
+            #expect(smtp.content.isEmpty)
+            #expect(testServer.appendedMessages.isEmpty)
+            let commands = testServer.commandLog.map { $0.uppercased() }
+            #expect(commands.contains { $0.contains("FETCH") })
+            #expect(!commands.contains { $0.contains("STORE") || $0.contains("EXPUNGE") })
+        }
+
         /// Runs `body` against an IMAP test server whose one mailbox holds
         /// `seeding` (when given), and returns the one message it APPENDed.
         private static func appendedMessage(
             seeding message: String? = nil,
             _ body: (IMAPServer) async throws -> Void
         ) async throws -> Data {
+            let messages = try await runTestServer(seeding: message, body).appendedMessages
+            #expect(messages.count == 1)
+            return try #require(messages.first)
+        }
+
+        /// Runs `body` against an IMAP test server whose one mailbox holds
+        /// `seeding` (when given), and returns the stopped server.
+        private static func runTestServer(
+            seeding message: String? = nil,
+            _ body: (IMAPServer) async throws -> Void
+        ) async throws -> IMAPTestServer {
             let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             let maildir = tempRoot.appendingPathComponent("Maildir")
             try FileManager.default.createDirectory(
@@ -216,9 +273,7 @@ struct BccHeaderTests {
                 try await body(server)
                 try await server.disconnect()
             }
-            let messages = testServer.appendedMessages
-            #expect(messages.count == 1)
-            return try #require(messages.first)
+            return testServer
         }
     }
 #endif

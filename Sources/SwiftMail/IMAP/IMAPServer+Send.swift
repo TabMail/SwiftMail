@@ -11,6 +11,8 @@ extension IMAPServer {
     /// 1. Resolves the drafts and sent mailboxes via special-use attributes (or throws if not found).
     /// 2. Selects the draft mailbox and fetches the raw message + envelope info.
     /// 3. Sends the raw message via the provided ``SMTPServer``, without its `Bcc` header.
+    ///    A draft whose header holds a carriage return without a line feed is
+    ///    not sent.
     /// 4. Appends the message, `Bcc` header included, to the Sent folder with the `\Seen` flag and current date.
     /// 5. Marks the draft as `\Deleted` and expunges it (UID EXPUNGE when available).
     ///
@@ -20,7 +22,8 @@ extension IMAPServer {
     ///   - draftMailbox: Source mailbox path. If `nil`, uses ``draftsFolder`` (throws if unavailable).
     ///   - sentMailbox: Destination mailbox path. If `nil`, uses ``sentFolder`` (throws if unavailable).
     /// - Returns: The UID of the message in the Sent folder, if the server supports UIDPLUS.
-    /// - Throws: ``UndefinedFolderError`` if drafts/sent folders cannot be resolved and no explicit path is provided.
+    /// - Throws: ``UndefinedFolderError`` if drafts/sent folders cannot be resolved and no explicit path is provided;
+    ///   ``IMAPError/invalidArgument(_:)`` if the draft cannot be sent as stored, which leaves it in place.
     @discardableResult
     public func sendDraft(
         uid draftUID: UID,
@@ -97,7 +100,12 @@ extension IMAPServer {
     /// The message with every `Bcc` field removed from its header section,
     /// folded continuation lines included. The body and every other byte are
     /// kept as they are, so a message in any charset survives unchanged.
-    static func removingBccFields(from message: Data) -> Data {
+    ///
+    /// - Throws: ``IMAPError/invalidArgument(_:)`` when the header section
+    ///   holds a carriage return that is not followed by a line feed. Readers
+    ///   disagree on where such a line ends, so a `Bcc` field could hide behind
+    ///   it; the draft is not sent and stays as it is.
+    static func removingBccFields(from message: Data) throws -> Data {
         let bytes = [UInt8](message)
         let lineFeed: UInt8 = 0x0A
         let carriageReturn: UInt8 = 0x0D
@@ -108,7 +116,15 @@ extension IMAPServer {
         while lineStart < bytes.count {
             let lineEnd = bytes[lineStart...].firstIndex(of: lineFeed).map { $0 + 1 } ?? bytes.count
             let line = bytes[lineStart..<lineEnd]
-            let content = line.prefix { $0 != carriageReturn && $0 != lineFeed }
+            // The line without its LF or CRLF ending.
+            var content = line
+            if content.last == lineFeed {
+                content = content.dropLast()
+                if content.last == carriageReturn { content = content.dropLast() }
+            }
+            if content.contains(carriageReturn) {
+                throw IMAPError.invalidArgument("Draft header has a carriage return without a line feed")
+            }
             if content.isEmpty {
                 // The blank line ends the header section; the rest is the body.
                 output.append(contentsOf: bytes[lineStart...])

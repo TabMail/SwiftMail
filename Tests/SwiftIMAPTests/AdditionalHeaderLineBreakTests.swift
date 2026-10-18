@@ -2,9 +2,9 @@ import Foundation
 import Testing
 @testable import SwiftMail
 
-/// An additional header written into SMTP content must stay one header field:
-/// a line break that does not fold it would start a new field, such as a Bcc
-/// field every recipient sees.
+/// Every header field written into SMTP content must stay the field it was
+/// written as: a line break that does not fold it, or a name that is not a
+/// field name, could start a new field, such as a Bcc field every recipient sees.
 @Suite("Additional header line breaks", .serialized, .timeLimit(.minutes(1)))
 struct AdditionalHeaderLineBreakTests {
     private static let blind = "hidden@example.com"
@@ -13,6 +13,7 @@ struct AdditionalHeaderLineBreakTests {
         ["X-Note": "note\rBcc: \(blind)"],
         ["X-Note": "note\nBcc: \(blind)"],
         ["X-Note": "note\r\nBcc: \(blind)"],
+        ["X-Note": "note\r\nX-Injected: yes"],
         ["X-Note": "note\r\n \nBcc: \(blind)"],
         ["X-Note": "note\r\n"],
         ["X-Note\r\nBcc": blind]
@@ -36,12 +37,36 @@ struct AdditionalHeaderLineBreakTests {
         #expect(content.contains("\r\nX-Note: first\r\n\tsecond\r\n"))
     }
 
-    private static func storedDraft(note: String) -> Data {
-        let lines = [
-            "From: sender@example.com", "To: to@example.com", "Bcc: \(blind)",
-            "Subject: Stored draft", "X-Note: \(note)", "", "Body."
-        ]
-        return Data(lines.joined(separator: "\r\n").utf8)
+    @Test("an SMTP send refuses an additional header name that is not a header field name", arguments: [
+        "Bcc:\(blind),X-Pad", "X Note", "", "X-N\u{F6}te"
+    ])
+    func refusesInvalidFieldName(name: String) {
+        var email = BccHeaderTests.email
+        email.additionalHeaders = [name: "p"]
+        #expect(throws: SMTPError.self) { try SMTPServer.prepareEmailForSend(email, capabilities: []) }
+    }
+
+    @Test("an SMTP send refuses a Message-ID with a line break", arguments: [
+        "x\r\nBcc: \(blind)\r\nX-Pad: p", "x\rBcc: \(blind)", "x\nBcc: \(blind)"
+    ])
+    func refusesLineBreakInMessageID(localPart: String) {
+        var email = BccHeaderTests.email
+        email.messageID = MessageID(localPart: localPart, domain: "example.com")
+        #expect(throws: SMTPError.self) { try SMTPServer.prepareEmailForSend(email, capabilities: []) }
+    }
+
+    /// With no Message-ID given, the generated one takes the sender's domain.
+    @Test("an SMTP send refuses a sender address whose domain has a line break")
+    func refusesLineBreakInSenderDomain() {
+        var email = BccHeaderTests.email
+        email.sender = EmailAddress(address: "sender@example.com\r\nX-Injected: yes")
+        #expect(email.messageID == nil)
+        #expect(throws: SMTPError.self) { try SMTPServer.prepareEmailForSend(email, capabilities: []) }
+    }
+
+    private static func storedDraft(_ lines: [String]) -> Data {
+        let all = ["From: sender@example.com", "To: to@example.com"] + lines + ["", "Body."]
+        return Data(all.joined(separator: "\r\n").utf8)
     }
 
     /// Whether a send threw, and what the SMTP server received.
@@ -69,7 +94,9 @@ struct AdditionalHeaderLineBreakTests {
 
     @Test("a stored draft whose header holds a lone carriage return is refused and nothing is sent")
     func convertedDraftWithLoneCRIsRefused() async throws {
-        let email = try Email(message: Message(emlData: Self.storedDraft(note: "note\rBcc: \(Self.blind)")))
+        let email = try Email(message: Message(emlData: Self.storedDraft([
+            "Bcc: \(Self.blind)", "Subject: Stored draft", "X-Note: note\rBcc: \(Self.blind)"
+        ])))
         #expect(email.bccRecipients.map(\.address) == [Self.blind])
         #expect(email.additionalHeaders?["x-note"]?.contains("\r") == true)
 
@@ -79,9 +106,28 @@ struct AdditionalHeaderLineBreakTests {
         #expect(result.content.isEmpty)
     }
 
+    /// The lone carriage return hides the draft's Bcc line inside its Message-ID,
+    /// so the BCC recipient would get nothing while the delivered Message-Id
+    /// line names them to any reader that ends a line at a carriage return.
+    @Test("a stored draft whose Message-ID holds a lone carriage return is refused and nothing is sent")
+    func convertedDraftWithLoneCRInMessageIDIsRefused() async throws {
+        let email = try Email(message: Message(emlData: Self.storedDraft([
+            "Subject: Stored draft", "Message-ID: <x@example.com>\rBcc: \(Self.blind)"
+        ])))
+        #expect(email.bccRecipients.isEmpty)
+        #expect(email.messageID?.description.contains("\r") == true)
+
+        let result = try await Self.send(email)
+        #expect(result.refused)
+        #expect(result.recipients.isEmpty)
+        #expect(result.content.isEmpty)
+    }
+
     @Test("an ordinary stored draft reaches every recipient and names no BCC recipient")
     func convertedOrdinaryDraftIsSent() async throws {
-        let email = try Email(message: Message(emlData: Self.storedDraft(note: "note")))
+        let email = try Email(message: Message(emlData: Self.storedDraft([
+            "Bcc: \(Self.blind)", "Subject: Stored draft", "X-Note: note"
+        ])))
 
         let result = try await Self.send(email)
         #expect(!result.refused)

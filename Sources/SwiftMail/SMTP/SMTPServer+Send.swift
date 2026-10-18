@@ -33,11 +33,13 @@ extension SMTPServer {
          no recipients, an invalid address, or a message exceeding the
          server-advertised `SIZE` limit. These are proven pre-submission
          failures and can follow normal retry policy.
-       - ``SMTPError/sendFailed(_:)``, before the dialogue starts, for an
-         ``Email/additionalHeaders`` entry that is a `Bcc` or `Resent-Bcc`
-         field (put BCC recipients in ``Email/bccRecipients``) or that holds
-         a CR or LF other than a fold (CRLF, then a space or tab). Retrying
-         the same ``Email`` fails the same way.
+       - ``SMTPError/sendFailed(_:)``, before the dialogue starts, when the
+         header would not be read as written: an ``Email/additionalHeaders``
+         name that is not a header field name, a `Bcc` or `Resent-Bcc` field
+         (put BCC recipients in ``Email/bccRecipients``), or a CR or LF other
+         than a fold (CRLF, then a space or tab) in any header value, including
+         ``Email/messageID`` and the sender domain a generated Message-ID
+         takes. Retrying the same ``Email`` fails the same way.
        - `CancellationError` if the task is cancelled before the dialogue starts.
      - Note:
        - All public operations on one ``SMTPServer`` are queued so commands,
@@ -369,9 +371,9 @@ extension SMTPServer {
     }
 
     static func prepareEmailForSend(_ email: Email, capabilities: [String]) throws -> PreparedEmailForSend {
-        try checkAdditionalHeaders(of: email)
         let use8BitMIME = capabilities.contains("8BITMIME")
         let preparedContent = email.preparedContent(use8BitMIME: use8BitMIME)
+        try checkHeaderFields(preparedContent.headerFields)
         let maximumMessageSizeOctets = maximumMessageSizeOctets(from: capabilities)
 
         if let maximumMessageSizeOctets,

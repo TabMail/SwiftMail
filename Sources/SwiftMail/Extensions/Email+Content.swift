@@ -4,6 +4,8 @@ extension Email {
     struct PreparedContent {
         let contentData: Data
         let messageSizeOctets: Int
+        /// The top-level header fields the content starts with, as written.
+        let headerFields: [HeaderField]
     }
 
     /// Bundled per-build state for ``constructContent`` and its helpers.
@@ -41,9 +43,16 @@ extension Email {
     }
 
     func preparedContent(use8BitMIME: Bool = false) -> PreparedContent {
-        let content = constructContent(use8BitMIME: use8BitMIME)
+        let headerFields = headerFields(includeBccHeader: false)
+        var content = ""
+        Self.write(headerFields, into: &content)
+        writeBody(use8BitMIME: use8BitMIME, into: &content)
         let contentData = Data(content.utf8)
-        return PreparedContent(contentData: contentData, messageSizeOctets: contentData.count)
+        return PreparedContent(
+            contentData: contentData,
+            messageSizeOctets: contentData.count,
+            headerFields: headerFields
+        )
     }
 
     public func messageSizeOctets(use8BitMIME: Bool = false) -> Int {
@@ -67,40 +76,14 @@ extension Email {
      */
     public func constructContent(use8BitMIME: Bool = false, includeBccHeader: Bool = false) -> String {
         var content = ""
-        writeHeaders(includeBccHeader: includeBccHeader, into: &content)
+        Self.write(headerFields(includeBccHeader: includeBccHeader), into: &content)
         writeBody(use8BitMIME: use8BitMIME, into: &content)
         return content
     }
 
-    /// Top-level RFC 5322 header block (`From`, `To`, `Cc`, optional `Bcc`, `Subject`,
-    /// `Date`, `Message-Id`, `MIME-Version`) plus any caller-supplied additional
-    /// headers, suppressing a duplicate `Message-Id` when one is already set.
-    private func writeHeaders(includeBccHeader: Bool, into content: inout String) {
-        content += "From: \(self.sender.headerString())\r\n"
-        let bcc = includeBccHeader ? [("Bcc", self.bccRecipients)] : []
-        for (name, addresses) in [("To", self.recipients), ("Cc", self.ccRecipients)] + bcc where !addresses.isEmpty {
-            content += "\(name): \(addresses.map { $0.headerString() }.joined(separator: ", "))\r\n"
-        }
-        content += "Subject: \(self.subject.rfc2047EncodedHeader())\r\n"
-        content += "Date: \(Self.rfc2822Date())\r\n"
-
-        let resolvedHeaderID = resolvedMessageIDHeader()
-        let suppressAdditionalMessageID = self.messageID != nil || resolvedHeaderID != nil
-        if let msgID = self.messageID ?? resolvedHeaderID {
-            content += "Message-Id: \(msgID)\r\n"
-        } else if !hasMessageIDHeaderInAdditionalHeaders() {
-            let generated = MessageID.generate(domain: Self.senderDomain(from: self.sender))
-            content += "Message-Id: \(generated)\r\n"
-        }
-        content += "MIME-Version: 1.0\r\n"
-
-        if let additionalHeaders {
-            for (key, value) in additionalHeaders.sorted(by: { $0.key < $1.key }) {
-                if suppressAdditionalMessageID && Self.isMessageIDHeaderName(key) {
-                    continue
-                }
-                content += "\(key): \(value)\r\n"
-            }
+    private static func write(_ headerFields: [HeaderField], into content: inout String) {
+        for field in headerFields {
+            content += "\(field.name): \(field.value)\r\n"
         }
     }
 
@@ -352,49 +335,5 @@ extension Email {
             to: disposition,
             headerName: "Content-Disposition"
         )
-    }
-
-    /// Formats the current date in RFC 2822 format for the Date header.
-    private static func rfc2822Date() -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
-        return formatter.string(from: Date())
-    }
-
-    /// Extracts the domain from the sender address for Message-Id generation.
-    private static func senderDomain(from sender: EmailAddress) -> String {
-        if let atIndex = sender.address.lastIndex(of: "@") {
-            let domain = sender.address[sender.address.index(after: atIndex)...]
-            if !domain.isEmpty {
-                return String(domain)
-            }
-        }
-        return "localhost"
-    }
-
-    private func resolvedMessageIDHeader() -> MessageID? {
-        guard let additionalHeaders else { return nil }
-
-        for (key, value) in additionalHeaders where Self.isMessageIDHeaderName(key) {
-            let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let messageID = MessageID(trimmedValue) {
-                return messageID
-            }
-        }
-
-        return nil
-    }
-
-    private func hasMessageIDHeaderInAdditionalHeaders() -> Bool {
-        guard let additionalHeaders else { return false }
-        return additionalHeaders.keys.contains(where: Self.isMessageIDHeaderName)
-    }
-
-    private static func isMessageIDHeaderName(_ key: String) -> Bool {
-        key.trimmingCharacters(in: .whitespacesAndNewlines).compare(
-            "message-id",
-            options: [.caseInsensitive]
-        ) == .orderedSame
     }
 }

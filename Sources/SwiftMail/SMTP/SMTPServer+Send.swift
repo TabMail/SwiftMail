@@ -96,10 +96,14 @@ extension SMTPServer {
         return result
     }
 
-    /// Send a pre-built RFC 822 message (e.g., a draft fetched from IMAP).
+    /// Send a pre-built RFC 822 message.
     ///
     /// Unlike ``sendEmail(_:)`` which constructs the MIME body from an ``Email``
     /// struct, this method transmits an already-formatted message verbatim as raw bytes.
+    /// Every recipient receives those bytes, so a message that names BCC recipients
+    /// in a `Bcc` header, such as a stored draft, must have it removed first; to send
+    /// a draft from an IMAP mailbox, use ``IMAPServer/sendDraft(uid:via:from:to:)``,
+    /// which does that.
     ///
     /// Recipient handling is all-or-nothing: the first rejected `RCPT TO` aborts
     /// the transaction (with a best-effort `RSET`) and the message is transmitted

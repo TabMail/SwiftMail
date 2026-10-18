@@ -45,7 +45,8 @@ extension IMAPServer {
      BCC recipients in a `Bcc` header; otherwise a draft would lose them. For
      a mailbox other people read (a shared folder), append the content of
      ``Email/constructContent(use8BitMIME:includeBccHeader:)`` without the
-     header through ``append(rawMessage:to:flags:internalDate:)`` instead.
+     header through ``append(rawMessage:to:flags:internalDate:)`` instead,
+     ending it with a CRLF as this method does.
 
      - Parameters:
         - email: The email to append.

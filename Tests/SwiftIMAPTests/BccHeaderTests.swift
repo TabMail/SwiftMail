@@ -6,7 +6,7 @@ import Testing
 /// message handed to SMTP never does (RFC 5322 section 3.6.3).
 @Suite("Bcc header")
 struct BccHeaderTests {
-    private static let email = Email(
+    static let email = Email(
         sender: EmailAddress(address: "sender@example.com"),
         recipients: [EmailAddress(address: "to@example.com")],
         ccRecipients: [EmailAddress(address: "cc@example.com")],
@@ -22,9 +22,13 @@ struct BccHeaderTests {
         String(content[..<(content.range(of: "\r\n\r\n")?.lowerBound ?? content.endIndex)])
     }
 
-    @Test("content built for SMTP names no BCC recipient")
-    func sentContentHasNoBcc() {
-        let content = Self.email.constructContent()
+    /// Goes through the content SMTPServer actually sends, with and without
+    /// 8BITMIME, so a change anywhere on that path is caught.
+    @Test("content prepared for an SMTP send names no BCC recipient", arguments: [[String](), ["8BITMIME"]])
+    func sentContentHasNoBcc(capabilities: [String]) throws {
+        let prepared = try SMTPServer.prepareEmailForSend(Self.email, capabilities: capabilities)
+        let content = String(bytes: prepared.contentData, encoding: .utf8) ?? ""
+        #expect(content.contains("Body text."))
         #expect(!content.contains("hidden@example.com"))
         #expect(!content.contains("second@example.com"))
         #expect(!Self.headerSection(content).lowercased().contains("bcc:"))
@@ -133,6 +137,24 @@ struct BccHeaderTests {
             let header = (String(bytes: appended, encoding: .utf8) ?? "")
                 .components(separatedBy: "\r\n\r\n").first ?? ""
             #expect(header.components(separatedBy: "\r\n").contains("Bcc: Hidden <hidden@example.com>"))
+        }
+
+        @Test("sendEmail delivers to BCC recipients without naming them")
+        func sendEmailKeepsBccOutOfTheDeliveredCopy() async throws {
+            let smtp = SMTPCaptureServer()
+            try await smtp.start()
+            let client = SMTPServer(host: "127.0.0.1", port: smtp.port, transportSecurity: .plainText)
+            try await client.connect()
+            _ = try await client.sendEmail(BccHeaderTests.email)
+            try await client.disconnect()
+            try await smtp.stop()
+
+            #expect(smtp.recipients.sorted()
+                == ["cc@example.com", "hidden@example.com", "second@example.com", "to@example.com"])
+            let delivered = String(bytes: smtp.content, encoding: .utf8) ?? ""
+            #expect(delivered.contains("Body text."))
+            #expect(!delivered.contains("hidden@example.com"))
+            #expect(!delivered.contains("second@example.com"))
         }
 
         /// Sending a draft that names BCC recipients delivers to them, sends no

@@ -30,11 +30,14 @@ extension SMTPServer {
          ``SMTPSendError/retryDisposition-swift.property`` distinguish retryable,
          permanent, and unsafe-to-retry outcomes without parsing error strings.
        - ``SMTPError`` for failures before the dialogue starts: not connected,
-         no recipients, an invalid address, a message exceeding the
-         server-advertised `SIZE` limit, or a `Bcc` or `Resent-Bcc` field in
-         ``Email/additionalHeaders`` (put BCC recipients in
-         ``Email/bccRecipients``). These are proven pre-submission
+         no recipients, an invalid address, or a message exceeding the
+         server-advertised `SIZE` limit. These are proven pre-submission
          failures and can follow normal retry policy.
+       - ``SMTPError/sendFailed(_:)``, before the dialogue starts, for an
+         ``Email/additionalHeaders`` entry that is a `Bcc` or `Resent-Bcc`
+         field (put BCC recipients in ``Email/bccRecipients``) or that holds
+         a CR or LF other than a fold (CRLF, then a space or tab). Retrying
+         the same ``Email`` fails the same way.
        - `CancellationError` if the task is cancelled before the dialogue starts.
      - Note:
        - All public operations on one ``SMTPServer`` are queued so commands,
@@ -366,15 +369,7 @@ extension SMTPServer {
     }
 
     static func prepareEmailForSend(_ email: Email, capabilities: [String]) throws -> PreparedEmailForSend {
-        // Every recipient receives the content, so a `Bcc` or `Resent-Bcc` field
-        // written from `additionalHeaders` would show its addresses to all of
-        // them. BCC recipients belong in `bccRecipients`: envelope only.
-        let blindFieldNames: Set = ["bcc", "resent-bcc"]
-        if let name = email.additionalHeaders?.keys.first(where: {
-            blindFieldNames.contains($0.trimmingCharacters(in: .whitespaces).lowercased())
-        }) {
-            throw SMTPError.sendFailed("Additional header \(name) would show blind-copy recipients to every recipient")
-        }
+        try checkAdditionalHeaders(of: email)
         let use8BitMIME = capabilities.contains("8BITMIME")
         let preparedContent = email.preparedContent(use8BitMIME: use8BitMIME)
         let maximumMessageSizeOctets = maximumMessageSizeOctets(from: capabilities)

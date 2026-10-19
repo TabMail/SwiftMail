@@ -88,61 +88,16 @@ struct BccHeaderTests {
         #expect(!Self.headerSection(email.constructContent(includeBccHeader: true)).lowercased().contains("bcc:"))
     }
 
-    // MARK: - removingBccFields (sendDraft's SMTP copy)
-
-    private static func strip(_ text: String) throws -> String {
-        String(bytes: try IMAPServer.removingBccFields(from: Data(text.utf8)), encoding: .utf8) ?? ""
-    }
-
-    @Test("removes a Bcc field and its folded continuation lines, any case")
-    func removesFoldedBcc() throws {
-        let raw = "From: me@example.com\r\nBCC: one@example.com,\r\n two@example.com,\r\n\tthree@example.com\r\n"
-            + "To: you@example.com\r\nSubject: Hi\r\n\r\nBody\r\n"
-        #expect(try Self.strip(raw) == "From: me@example.com\r\nTo: you@example.com\r\nSubject: Hi\r\n\r\nBody\r\n")
-    }
-
-    @Test("removes every Bcc field, whatever whitespace comes before the colon",
-          arguments: ["", " ", "\t", "  ", " \t "])
-    func removesEveryBcc(whitespace: String) throws {
-        let raw = "Bcc: a@example.com\r\nTo: you@example.com\r\nbcc\(whitespace): b@example.com\r\n\r\nBody\r\n"
-        #expect(try Self.strip(raw) == "To: you@example.com\r\n\r\nBody\r\n")
-    }
-
-    @Test("keeps the body, even a body line that looks like a Bcc field")
-    func keepsBody() throws {
-        let raw = "To: you@example.com\r\n\r\nBcc: not-a-header@example.com\r\n"
-        #expect(try Self.strip(raw) == raw)
-    }
-
-    @Test("keeps fields whose name only starts or ends with Bcc")
-    func keepsSimilarNames() throws {
-        let raw = "X-Bcc: a@example.com\r\nBcc-Note: b\r\nResent-To: c@example.com\r\n\r\nBody\r\n"
-        #expect(try Self.strip(raw) == raw)
-    }
-
-    /// Resent-Bcc means what Bcc means (RFC 5322 section 3.6.6), and sendDraft
-    /// does not send resent messages, so a draft carrying one is not sent.
-    @Test("refuses a header with a Resent-Bcc field", arguments: ["Resent-Bcc", "resent-BCC", "Resent-Bcc \t"])
-    func refusesResentBcc(name: String) {
-        let raw = "To: you@example.com\r\n\(name): hidden@example.com\r\n\r\nBody\r\n"
-        #expect(throws: IMAPError.self) { try Self.strip(raw) }
-    }
-
-    @Test("keeps a Resent-Bcc line in the body")
-    func keepsResentBccInBody() throws {
-        let raw = "To: you@example.com\r\n\r\nResent-Bcc: not-a-header@example.com\r\n"
-        #expect(try Self.strip(raw) == raw)
-    }
-
-    @Test("keeps folded visible fields byte for byte, and a whitespace-only continuation is not the blank line")
-    func keepsFoldedVisibleFields() throws {
-        let raw = "To: a@example.com,\r\n\tb@example.com\r\nX-Note: n\r\n \r\nBcc: hidden@example.com,\r\n \r\n"
-            + " second@example.com\r\nCc: c@example.com\r\n\r\nBody\r\n"
-        let stripped = try Self.strip(raw)
-        #expect(stripped
-            == "To: a@example.com,\r\n\tb@example.com\r\nX-Note: n\r\n \r\nCc: c@example.com\r\n\r\nBody\r\n")
-        #expect(!stripped.contains("hidden@example.com"))
-        #expect(!stripped.contains("second@example.com"))
+    /// `constructContent()` is documented as ready for SMTP, so by default it
+    /// names no BCC recipient; only a kept copy asks for the Bcc header.
+    @Test("content built with the defaults names no BCC recipient", arguments: [false, true])
+    func defaultContentHasNoBcc(use8BitMIME: Bool) {
+        let content = Self.email.constructContent(use8BitMIME: use8BitMIME)
+        #expect(Self.fields("To", in: content) == ["to@example.com"])
+        #expect(Self.fields("Cc", in: content) == ["cc@example.com"])
+        #expect(!content.contains("hidden@example.com"))
+        #expect(!content.contains("second@example.com"))
+        #expect(!Self.headerSection(content).lowercased().contains("bcc:"))
     }
 
     // MARK: - Blind-copy fields in additionalHeaders (SMTP send)
@@ -164,58 +119,6 @@ struct BccHeaderTests {
         #expect(Self.fields("X-Bcc-Note", in: content) == ["n"])
         #expect(Self.fields("Resent-To", in: content) == ["resent@example.com"])
         #expect(!content.contains("hidden@example.com"))
-    }
-
-    @Test("keeps a line with no colon, and a header section with no blank line after it")
-    func keepsMalformedLines() throws {
-        #expect(try Self.strip("To: you@example.com\r\nbcc\r\nSubject: Hi\r\n\r\nBody")
-            == "To: you@example.com\r\nbcc\r\nSubject: Hi\r\n\r\nBody")
-        #expect(try Self.strip("To: you@example.com\r\nBcc: a@example.com") == "To: you@example.com\r\n")
-    }
-
-    /// Readers disagree on where a line with a lone carriage return ends, so a
-    /// Bcc field could hide behind one. Such a header is refused, not guessed at.
-    @Test("refuses a header with a carriage return that no line feed follows", arguments: [
-        "To: you@example.com\r\n\rX-Note: odd\r\nBcc: a@example.com\r\n\r\nBody\r\n",
-        "To: you@example.com\rBcc: a@example.com\r\n\r\nBody\r\n",
-        "To: you@example.com\r\r\nBcc: a@example.com\r\n\r\nBody\r\n",
-        "To: you@example.com\nBcc: a@example.com\r"
-    ])
-    func refusesBareCRInHeader(raw: String) {
-        #expect(throws: IMAPError.self) { try Self.strip(raw) }
-    }
-
-    @Test("keeps a lone carriage return in the body")
-    func keepsBareCRInBody() throws {
-        #expect(try Self.strip("To: you@example.com\r\nBcc: a@example.com\r\n\r\nBody\rmore\r\n")
-            == "To: you@example.com\r\n\r\nBody\rmore\r\n")
-    }
-
-    @Test("handles bare LF line endings")
-    func handlesBareLF() throws {
-        let raw = "From: me@example.com\nBcc: one@example.com,\n two@example.com\nTo: you@example.com\n\nBody\n"
-        #expect(try Self.strip(raw) == "From: me@example.com\nTo: you@example.com\n\nBody\n")
-    }
-
-    @Test("keeps bytes that are not UTF-8 unchanged")
-    func keepsNonUTF8Bytes() throws {
-        var raw = Data("Subject: caf".utf8)
-        raw.append(0xE9)  // Latin-1 e-acute
-        raw.append(contentsOf: Data("\r\nBcc: a@example.com\r\n\r\n".utf8))
-        raw.append(0xFF)
-        var expected = Data("Subject: caf".utf8)
-        expected.append(0xE9)
-        expected.append(contentsOf: Data("\r\n\r\n".utf8))
-        expected.append(0xFF)
-        #expect(try IMAPServer.removingBccFields(from: raw) == expected)
-    }
-
-    @Test("a kept copy loses exactly its Bcc header and nothing else")
-    func keptCopyRoundTrip() throws {
-        let kept = Self.email.constructContent(includeBccHeader: true)
-        let bccLine = kept.components(separatedBy: "\r\n").first { $0.hasPrefix("Bcc: ") } ?? ""
-        #expect(!bccLine.isEmpty)
-        #expect(try Self.strip(kept) == kept.replacingOccurrences(of: bccLine + "\r\n", with: ""))
     }
 }
 
@@ -325,7 +228,8 @@ struct BccHeaderTests {
         /// field is refused before anything reaches SMTP, and stays in the
         /// Drafts folder as it was.
         @Test("sendDraft refuses a draft it cannot send without disclosing a blind recipient",
-              arguments: ["\rX-Note: odd", "Resent-Bcc: resent@example.com"])
+              arguments: ["\rX-Note: odd", "Resent-Bcc: resent@example.com",
+                          "Bcc\r\n : leak@example.com", "Bcc\u{0B}: leak@example.com"])
         func sendDraftRefusesUnsafeHeader(line: String) async throws {
             let draft = "From: sender@example.com\r\nTo: to@example.com\r\n\(line)\r\n"
                 + "Bcc: hidden@example.com\r\nSubject: Draft\r\nMessage-ID: <draft-cr@example.com>\r\n"

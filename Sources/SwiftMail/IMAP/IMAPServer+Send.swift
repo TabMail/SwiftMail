@@ -104,9 +104,12 @@ extension IMAPServer {
     /// - Throws: ``IMAPError/invalidArgument(_:)`` when the header section
     ///   holds a carriage return that is not followed by a line feed (readers
     ///   disagree on where such a line ends, so a `Bcc` field could hide behind
-    ///   it), or a `Resent-Bcc` field (`sendDraft` does not send resent
-    ///   messages, and every recipient would see it). The draft is not sent and
-    ///   stays as it is.
+    ///   it), a `Resent-Bcc` field (`sendDraft` does not send resent
+    ///   messages, and every recipient would see it), or a line it cannot tell
+    ///   is or is not a `Bcc` field: a continuation line with no field above it,
+    ///   or a field name that is empty or holds a byte RFC 5322 does not allow
+    ///   in one. The draft is not sent and stays as it is. A line with no colon
+    ///   and no continuation is kept: no reader takes it for a field.
     static func removingBccFields(from message: Data) throws -> Data {
         let bytes = [UInt8](message)
         let lineFeed: UInt8 = 0x0A
@@ -114,6 +117,9 @@ extension IMAPServer {
         var output = [UInt8]()
         output.reserveCapacity(bytes.count)
         var dropping = false
+        // Whether the last line that was not a continuation was a header field,
+        // so a continuation line below it has a field to belong to.
+        var inField = false
         var lineStart = 0
         while lineStart < bytes.count {
             let lineEnd = bytes[lineStart...].firstIndex(of: lineFeed).map { $0 + 1 } ?? bytes.count
@@ -133,13 +139,13 @@ extension IMAPServer {
                 break
             }
             if let first = content.first, first == 0x20 || first == 0x09 {
-                // A folded continuation belongs to the field above it.
-            } else {
-                let name = Self.fieldName(content)
-                if name == Array("resent-bcc".utf8) {
-                    throw IMAPError.invalidArgument("Draft has a Resent-Bcc field")
+                // A folded continuation belongs to the field above it. With no
+                // field above it, unfolding could make it part of a Bcc field.
+                guard inField else {
+                    throw IMAPError.invalidArgument("Draft header has a continuation line with no field above it")
                 }
-                dropping = name == Array("bcc".utf8)
+            } else {
+                (dropping, inField) = try Self.classifyFieldLine(content)
             }
             if !dropping {
                 output.append(contentsOf: line)
@@ -147,6 +153,24 @@ extension IMAPServer {
             lineStart = lineEnd
         }
         return Data(output)
+    }
+
+    /// Whether a header line that is not a continuation is a `Bcc` field, and
+    /// whether it is a header field at all (so continuation lines may follow).
+    /// A line with no colon is neither.
+    ///
+    /// - Throws: ``IMAPError/invalidArgument(_:)`` for a field name that is
+    ///   empty or holds a byte RFC 5322 does not allow in one, and for a
+    ///   `Resent-Bcc` field.
+    private static func classifyFieldLine(_ content: ArraySlice<UInt8>) throws -> (isBcc: Bool, isField: Bool) {
+        guard let name = Self.fieldName(content) else { return (false, false) }
+        guard !name.isEmpty, name.allSatisfy({ (33...126).contains($0) }) else {
+            throw IMAPError.invalidArgument("Draft header has a field name that is not valid")
+        }
+        if name == Array("resent-bcc".utf8) {
+            throw IMAPError.invalidArgument("Draft has a Resent-Bcc field")
+        }
+        return (name == Array("bcc".utf8), true)
     }
 
     /// The field name of a header line, ASCII-lowercased, with any whitespace

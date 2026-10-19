@@ -104,10 +104,24 @@ struct BccFieldRemovalTests {
             == "To: you@example.com\r\n\r\nBody\rmore\r\n")
     }
 
-    @Test("handles bare LF line endings")
-    func handlesBareLF() throws {
-        let raw = "From: me@example.com\nBcc: one@example.com,\n two@example.com\nTo: you@example.com\n\nBody\n"
-        #expect(try Self.strip(raw) == "From: me@example.com\nTo: you@example.com\n\nBody\n")
+    /// Readers disagree on whether a bare line feed ends a header line, so a
+    /// stripper that took one as a line end could read a Bcc field as body (or
+    /// the other way round). A header line must end in CRLF; the body may not.
+    @Test("refuses a header line that a bare line feed ends", arguments: [
+        "From: me@example.com\nBcc: one@example.com,\n two@example.com\nTo: you@example.com\n\nBody\n",
+        "To: you@example.com\r\nSubject: Draft\n\r\nBcc: hidden@example.com\r\n\r\nBody\r\n",
+        "To: you@example.com\r\nSubject: x\n\nfoo\r\nBcc: hidden@example.com\r\n\r\nBody\r\n",
+        "To: you@example.com\nSubject: x\n\nBody\r\nBcc: hidden@example.com\r\n",
+        "To: you@example.com\r\nBcc: hidden@example.com\r\n\nBody\r\n"
+    ])
+    func refusesBareLFInHeader(raw: String) {
+        #expect(throws: IMAPError.self) { try Self.strip(raw) }
+    }
+
+    @Test("keeps bare line feeds in the body")
+    func keepsBareLFInBody() throws {
+        #expect(try Self.strip("To: you@example.com\r\nBcc: a@example.com\r\n\r\nBody\nmore\n")
+            == "To: you@example.com\r\n\r\nBody\nmore\n")
     }
 
     @Test("keeps bytes that are not UTF-8 unchanged")

@@ -101,10 +101,11 @@ extension IMAPServer {
     /// folded continuation lines included. The body and every other byte are
     /// kept as they are, so a message in any charset survives unchanged.
     ///
-    /// - Throws: ``IMAPError/invalidArgument(_:)`` when the header section
-    ///   holds a carriage return that is not followed by a line feed (readers
-    ///   disagree on where such a line ends, so a `Bcc` field could hide behind
-    ///   it), a `Resent-Bcc` field (`sendDraft` does not send resent
+    /// - Throws: ``IMAPError/invalidArgument(_:)`` when a line of the header
+    ///   section, the blank line that ends it included, does not end in CRLF:
+    ///   a carriage return no line feed follows, or a line feed no carriage
+    ///   return comes before (readers disagree on where such a line ends, so a
+    ///   `Bcc` field could hide behind it); a `Resent-Bcc` field (`sendDraft` does not send resent
     ///   messages, and every recipient would see it), or a line it cannot tell
     ///   is or is not a `Bcc` field: a continuation line with no field above it,
     ///   or a field name that is empty or holds a byte RFC 5322 does not allow
@@ -113,7 +114,6 @@ extension IMAPServer {
     static func removingBccFields(from message: Data) throws -> Data {
         let bytes = [UInt8](message)
         let lineFeed: UInt8 = 0x0A
-        let carriageReturn: UInt8 = 0x0D
         var output = [UInt8]()
         output.reserveCapacity(bytes.count)
         var dropping = false
@@ -124,15 +124,7 @@ extension IMAPServer {
         while lineStart < bytes.count {
             let lineEnd = bytes[lineStart...].firstIndex(of: lineFeed).map { $0 + 1 } ?? bytes.count
             let line = bytes[lineStart..<lineEnd]
-            // The line without its LF or CRLF ending.
-            var content = line
-            if content.last == lineFeed {
-                content = content.dropLast()
-                if content.last == carriageReturn { content = content.dropLast() }
-            }
-            if content.contains(carriageReturn) {
-                throw IMAPError.invalidArgument("Draft header has a carriage return without a line feed")
-            }
+            let content = try Self.headerLineContent(line)
             if content.isEmpty {
                 // The blank line ends the header section; the rest is the body.
                 output.append(contentsOf: bytes[lineStart...])
@@ -153,6 +145,28 @@ extension IMAPServer {
             lineStart = lineEnd
         }
         return Data(output)
+    }
+
+    /// A header line without its CRLF ending. The last line of a message with
+    /// no blank line may have no ending at all.
+    ///
+    /// - Throws: ``IMAPError/invalidArgument(_:)`` for a line feed with no
+    ///   carriage return before it, or a carriage return no line feed follows.
+    private static func headerLineContent(_ line: ArraySlice<UInt8>) throws -> ArraySlice<UInt8> {
+        let lineFeed: UInt8 = 0x0A
+        let carriageReturn: UInt8 = 0x0D
+        var content = line
+        if content.last == lineFeed {
+            content = content.dropLast()
+            guard content.last == carriageReturn else {
+                throw IMAPError.invalidArgument("Draft header has a line feed without a carriage return")
+            }
+            content = content.dropLast()
+        }
+        if content.contains(carriageReturn) {
+            throw IMAPError.invalidArgument("Draft header has a carriage return without a line feed")
+        }
+        return content
     }
 
     /// Whether a header line that is not a continuation is a `Bcc` field, and

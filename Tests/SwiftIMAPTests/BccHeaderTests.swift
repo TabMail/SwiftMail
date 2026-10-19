@@ -229,7 +229,8 @@ struct BccHeaderTests {
         /// Drafts folder as it was.
         @Test("sendDraft refuses a draft it cannot send without disclosing a blind recipient",
               arguments: ["\rX-Note: odd", "Resent-Bcc: resent@example.com",
-                          "Bcc\r\n : leak@example.com", "Bcc\u{0B}: leak@example.com"])
+                          "Bcc\r\n : leak@example.com", "Bcc\u{0B}: leak@example.com",
+                          "X-Note: odd\n"])
         func sendDraftRefusesUnsafeHeader(line: String) async throws {
             let draft = "From: sender@example.com\r\nTo: to@example.com\r\n\(line)\r\n"
                 + "Bcc: hidden@example.com\r\nSubject: Draft\r\nMessage-ID: <draft-cr@example.com>\r\n"

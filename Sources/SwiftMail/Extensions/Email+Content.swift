@@ -72,11 +72,33 @@ extension Email {
        8bit if they are deemed safe via ``String/isSafe8BitContent()``.
      - Parameter includeBccHeader: Name ``bccRecipients`` in a `Bcc` header. Only for a copy the
        sender keeps (a draft or Sent copy appended over IMAP), never for SMTP (RFC 5322 section 3.6.3).
-     - Returns: The complete message body ready to be sent via SMTP.
+     - Returns: The complete message body ready to be sent via SMTP. Its header fields are
+       written as given, unchecked; ``SMTPServer/sendEmail(_:)`` and
+       ``IMAPServer/append(email:to:flags:internalDate:)`` check them first.
      */
     public func constructContent(use8BitMIME: Bool = false, includeBccHeader: Bool = false) -> String {
         var content = ""
         Self.write(headerFields(includeBccHeader: includeBccHeader), into: &content)
+        writeBody(use8BitMIME: use8BitMIME, into: &content)
+        return content
+    }
+
+    /// The content of a copy the sender keeps (a draft or a Sent copy appended
+    /// over IMAP), with a `Bcc` header naming ``bccRecipients``. Its header
+    /// fields get the check an SMTP send makes, so no value can add a field to
+    /// the stored copy, which a later send of that draft would deliver. The one
+    /// blind field allowed is the `Bcc` field this library writes.
+    ///
+    /// - Throws: ``IMAPError/invalidArgument(_:)`` when a header field fails the check.
+    func keptCopyContent(use8BitMIME: Bool) throws -> String {
+        let fields = headerFields(includeBccHeader: true)
+        do {
+            try SMTPServer.checkHeaderFields(fields.filter { !$0.namesBccRecipients })
+        } catch SMTPError.sendFailed(let reason) {
+            throw IMAPError.invalidArgument(reason)
+        }
+        var content = ""
+        Self.write(fields, into: &content)
         writeBody(use8BitMIME: use8BitMIME, into: &content)
         return content
     }

@@ -144,6 +144,23 @@ struct BccHeaderTests {
             #expect(stored.contains("Draft body."))
         }
 
+        /// A message copied with `Email(message:)` keeps a lone carriage return
+        /// in a header value; stored as it was, it would add a Bcc field that
+        /// a later send of the draft delivers to.
+        @Test("createDraft refuses a copied message whose header would add a field, and appends nothing")
+        func createDraftRefusesInjectedField() async throws {
+            let eml = "From: sender@example.com\r\nTo: to@example.com\r\nSubject: Copied\r\n"
+                + "X-Note: note\rBcc: attacker@example.com\r\n\r\nBody.\r\n"
+            let email = try Email(message: Message(emlData: Data(eml.utf8)))
+            #expect(email.bccRecipients.isEmpty)
+            let testServer = try await Self.runTestServer { server in
+                await #expect(throws: IMAPError.self) {
+                    try await server.createDraft(from: email, in: "Drafts")
+                }
+            }
+            #expect(testServer.appendedMessages.isEmpty)
+        }
+
         @Test("sendEmail delivers to BCC recipients without naming them")
         func sendEmailKeepsBccOutOfTheDeliveredCopy() async throws {
             let smtp = SMTPCaptureServer()

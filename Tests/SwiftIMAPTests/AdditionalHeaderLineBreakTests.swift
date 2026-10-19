@@ -64,6 +64,41 @@ struct AdditionalHeaderLineBreakTests {
         #expect(throws: SMTPError.self) { try SMTPServer.prepareEmailForSend(email, capabilities: []) }
     }
 
+    /// A draft or Sent copy appended over IMAP gets the same check: a field it
+    /// stored would reach every recipient when that draft is sent.
+    @Test("a copy kept over IMAP refuses a header field an SMTP send refuses", arguments: [
+        ["X-Note": "note\rBcc: \(blind)"],
+        ["X-Note": "note\nReply-To: \(blind)"],
+        ["X-Note": "note\r\nBcc: \(blind)"],
+        ["Bcc": blind],
+        ["X Note": "p"]
+    ])
+    func keptCopyRefusesUnsafeHeader(headers: [String: String]) {
+        var email = BccHeaderTests.email
+        email.additionalHeaders = headers
+        #expect(throws: IMAPError.self) { try email.keptCopyContent(use8BitMIME: true) }
+    }
+
+    @Test("a copy kept over IMAP refuses a Message-ID or sender domain with a line break")
+    func keptCopyRefusesLineBreakInMessageID() {
+        var email = BccHeaderTests.email
+        email.messageID = MessageID(localPart: "id", domain: "example.com\rX-Injected: yes")
+        #expect(throws: IMAPError.self) { try email.keptCopyContent(use8BitMIME: true) }
+        var other = BccHeaderTests.email
+        other.sender = EmailAddress(address: "sender@example.com\r\nX-Injected: yes")
+        #expect(throws: IMAPError.self) { try other.keptCopyContent(use8BitMIME: true) }
+    }
+
+    @Test("a copy kept over IMAP keeps its own Bcc header and folded fields")
+    func keptCopyKeepsBccAndFolds() throws {
+        var email = BccHeaderTests.email
+        email.additionalHeaders = ["References": "<a@example.com>\r\n <b@example.com>"]
+        let kept = try email.keptCopyContent(use8BitMIME: true)
+        let bcc = email.bccRecipients.map { $0.headerString() }.joined(separator: ", ")
+        #expect(BccHeaderTests.fields("Bcc", in: kept) == [bcc])
+        #expect(kept.contains("\r\nReferences: <a@example.com>\r\n <b@example.com>\r\n"))
+    }
+
     private static func storedDraft(_ lines: [String]) -> Data {
         let all = ["From: sender@example.com", "To: to@example.com"] + lines + ["", "Body."]
         return Data(all.joined(separator: "\r\n").utf8)

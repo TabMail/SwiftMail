@@ -5,6 +5,9 @@ extension Email {
     struct HeaderField {
         let name: String
         let value: String
+        /// Whether this is the `Bcc` field this library writes from
+        /// ``Email/bccRecipients`` for a copy the sender keeps.
+        var namesBccRecipients = false
     }
 
     /// Top-level RFC 5322 header fields (`From`, `To`, `Cc`, optional `Bcc`, `Subject`,
@@ -14,7 +17,9 @@ extension Email {
         var fields = [HeaderField(name: "From", value: self.sender.headerString())]
         let bcc = includeBccHeader ? [("Bcc", self.bccRecipients)] : []
         for (name, addresses) in [("To", self.recipients), ("Cc", self.ccRecipients)] + bcc where !addresses.isEmpty {
-            fields.append(HeaderField(name: name, value: addresses.map { $0.headerString() }.joined(separator: ", ")))
+            fields.append(HeaderField(
+                name: name, value: addresses.map { $0.headerString() }.joined(separator: ", "),
+                namesBccRecipients: name == "Bcc"))
         }
         fields.append(HeaderField(name: "Subject", value: self.subject.rfc2047EncodedHeader()))
         fields.append(HeaderField(name: "Date", value: Self.rfc2822Date()))

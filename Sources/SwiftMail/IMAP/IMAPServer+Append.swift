@@ -48,6 +48,11 @@ extension IMAPServer {
      header through ``append(rawMessage:to:flags:internalDate:)`` instead,
      ending it with a CRLF as this method does.
 
+     The header fields get the check ``SMTPServer/sendEmail(_:)`` makes: a field
+     name that is not an RFC 5322 field name, a `Bcc` or `Resent-Bcc` field in
+     ``Email/additionalHeaders``, or a line break in a value that is not a fold
+     throws ``IMAPError/invalidArgument(_:)`` and nothing is appended.
+
      - Parameters:
         - email: The email to append.
         - mailbox: The destination mailbox path (e.g. "Drafts").
@@ -66,7 +71,7 @@ extension IMAPServer {
             throw IMAPError.invalidArgument("Mailbox name must not be empty")
         }
 
-        var content = canonicalizeCRLF(email.constructContent(use8BitMIME: true, includeBccHeader: true))
+        var content = canonicalizeCRLF(try email.keptCopyContent(use8BitMIME: true))
         if !content.hasSuffix("\r\n") {
             content.append("\r\n")
         }
